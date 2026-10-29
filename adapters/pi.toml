@@ -1,0 +1,75 @@
+# Pi (https://pi.dev). Sources: packages/coding-agent/src/config.ts,
+# docs/environment-variables.md, docs/models.md, and the pi-provider-litellm README.
+
+[harness]
+id = "pi"
+name = "Pi"
+executable = "pi"
+version_args = ["--version"]
+min_version = "0.99.2"
+install_hint = "npm install -g @earendil-works/pi-coding-agent"
+
+[home]
+env = "PI_CODING_AGENT_DIR"
+default = "${WARDEN_DATA}/homes/pi"
+
+# Preferred: first-class LiteLLM support through the pi-provider-litellm extension.
+[inject.litellm]
+base_url_env = "LITELLM_BASE_URL"
+key_env = "LITELLM_API_KEY"
+key_helper_env = "LITELLM_API_KEY_HELPER"
+model_args = ["--model", "litellm/${model}"]
+extra_env = { LITELLM_MODELS_DEV = "0" }
+requires = ["extension:pi-provider-litellm"]
+
+# Fallbacks for plain gateways; base URL goes through the emitted models.json.
+[inject.anthropic-messages]
+key_env = "ANTHROPIC_API_KEY"
+native_api = "anthropic-messages"
+model_args = ["--model", "warden/${model}"]
+
+[inject.openai-responses]
+key_env = "OPENAI_API_KEY"
+native_api = "openai-responses"
+model_args = ["--model", "warden/${model}"]
+
+[inject.openai-chat]
+key_env = "OPENAI_API_KEY"
+native_api = "openai-completions"
+model_args = ["--model", "warden/${model}"]
+
+[env]
+PI_OFFLINE = "1"
+PI_SKIP_VERSION_CHECK = "1"
+PI_TELEMETRY = "0"
+
+[[net]]
+host = "pi.dev"
+purpose = "catalog"
+default = "deny"
+
+[[net]]
+host = "api.github.com"
+purpose = "share"
+default = "deny"
+
+[[net]]
+host = "registry.npmjs.org"
+purpose = "update-check"
+default = "deny"
+
+[[emit]]
+path = "${home}/models.json"
+format = "json"
+merge = "replace-key"
+key = "providers.warden"
+when_format = ["anthropic-messages", "openai-responses", "openai-chat"]
+template = '''
+{
+  "name": "warden",
+  "baseUrl": "${base_url}",
+  "api": "${api}",
+  "apiKey": "$$${key_env}",
+  "models": [ { "id": "${model}", "name": "${model}", "reasoning": true } ]
+}
+'''

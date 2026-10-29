@@ -1,0 +1,63 @@
+# OpenCode. Sources: packages/opencode/src/config/config.ts (OPENCODE_CONFIG_CONTENT,
+# OPENCODE_CONFIG_DIR), src/provider/provider.ts (options.baseURL), src/flag.
+
+[harness]
+id = "opencode"
+name = "OpenCode"
+executable = "opencode"
+version_args = ["--version"]
+install_hint = "npm install -g opencode-ai"
+
+[home]
+env = "OPENCODE_CONFIG_DIR"
+default = "${WARDEN_DATA}/homes/opencode"
+
+# OpenCode has no base-URL env var; the provider block goes in OPENCODE_CONFIG_CONTENT,
+# and the key is referenced from the environment with {env:VAR}.
+[inject.anthropic-messages]
+key_env = "ANTHROPIC_API_KEY"
+native_api = "@ai-sdk/anthropic"
+model_args = ["--model", "warden/${model}"]
+extra_env = { OPENCODE_CONFIG_CONTENT = '''{"$schema":"https://opencode.ai/config.json","provider":{"warden":{"npm":"${api}","name":"warden gateway","options":{"baseURL":"${base_url}","apiKey":"{env:${key_env}}"},"models":{"${model}":{"name":"${model}"}}}}}''' }
+
+[inject.openai-chat]
+key_env = "OPENAI_API_KEY"
+native_api = "@ai-sdk/openai-compatible"
+model_args = ["--model", "warden/${model}"]
+extra_env = { OPENCODE_CONFIG_CONTENT = '''{"$schema":"https://opencode.ai/config.json","provider":{"warden":{"npm":"${api}","name":"warden gateway","options":{"baseURL":"${base_url}","apiKey":"{env:${key_env}}"},"models":{"${model}":{"name":"${model}"}}}}}''' }
+
+[inject.openai-responses]
+key_env = "OPENAI_API_KEY"
+native_api = "@ai-sdk/openai"
+model_args = ["--model", "warden/${model}"]
+extra_env = { OPENCODE_CONFIG_CONTENT = '''{"$schema":"https://opencode.ai/config.json","provider":{"warden":{"npm":"${api}","name":"warden gateway","options":{"baseURL":"${base_url}","apiKey":"{env:${key_env}}"},"models":{"${model}":{"name":"${model}"}}}}}''' }
+
+[env]
+OPENCODE_DISABLE_AUTOUPDATE = "1"
+OPENCODE_DISABLE_SHARE = "1"
+OPENCODE_DISABLE_LSP_DOWNLOAD = "1"
+
+[[fs]]
+path = "~/.local/share/opencode"
+access = "rw"
+reason = "sessions, auth, sqlite"
+
+[[fs]]
+path = "~/.cache/opencode"
+access = "rw"
+reason = "cache"
+
+[[net]]
+host = "models.dev"
+purpose = "catalog"
+default = "allow"
+
+[[net]]
+host = "api.github.com"
+purpose = "update-check"
+default = "deny"
+
+[[net]]
+host = "opencode.ai"
+purpose = "share"
+default = "deny"

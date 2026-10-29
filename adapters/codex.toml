@@ -1,0 +1,56 @@
+# OpenAI Codex CLI. Sources: codex-rs/config/src/loader/mod.rs, codex-rs/config.md
+# (model_providers), codex-rs/model-provider-info.
+
+[harness]
+id = "codex"
+name = "Codex"
+executable = "codex"
+version_args = ["--version"]
+install_hint = "npm install -g @openai/codex"
+
+[home]
+env = "CODEX_HOME"
+default = "${WARDEN_DATA}/homes/codex"
+
+[inject.openai-responses]
+key_env = "OPENAI_API_KEY"
+native_api = "responses"
+model_args = ["--model", "${model}"]
+
+[inject.openai-chat]
+key_env = "OPENAI_API_KEY"
+native_api = "chat"
+model_args = ["--model", "${model}"]
+
+[[net]]
+host = "auth.openai.com"
+purpose = "auth"
+default = "deny"
+
+[[net]]
+host = "chatgpt.com"
+purpose = "auth"
+default = "deny"
+
+[[net]]
+host = "api.github.com"
+purpose = "update-check"
+default = "deny"
+
+# config.toml in CODEX_HOME: a `warden` provider pointing at the gateway, set as the
+# default. `key = "."` merges these top-level keys into the user's existing file.
+[[emit]]
+path = "${home}/config.toml"
+format = "toml"
+merge = "replace-key"
+key = "."
+template = '''
+model_provider = "warden"
+model = "${model}"
+
+[model_providers.warden]
+name = "warden gateway"
+base_url = "${base_url}"
+env_key = "${key_env}"
+wire_api = "${api}"
+'''

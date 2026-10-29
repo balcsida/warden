@@ -1,0 +1,58 @@
+# Claude Code. Source: https://code.claude.com/docs/en/env-vars and /settings.
+
+[harness]
+id = "claude-code"
+name = "Claude Code"
+executable = "claude"
+version_args = ["--version"]
+install_hint = "npm install -g @anthropic-ai/claude-code"
+
+[home]
+env = "CLAUDE_CONFIG_DIR"
+default = "${WARDEN_DATA}/homes/claude-code"
+
+[inject.anthropic-messages]
+base_url_env = "ANTHROPIC_BASE_URL"
+key_env = "ANTHROPIC_API_KEY"
+# apiKeyHelper is a settings key, not an env var: the emitted settings.json below
+# carries the command. Setting key_helper_env opts this harness into the helper path.
+key_helper_env = "WARDEN_API_KEY_HELPER"
+model_env = "ANTHROPIC_MODEL"
+extra_env = { CLAUDE_CODE_API_KEY_HELPER_TTL_MS = "300000" }
+
+[env]
+DISABLE_AUTOUPDATER = "1"
+DISABLE_TELEMETRY = "1"
+DISABLE_ERROR_REPORTING = "1"
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1"
+
+[[net]]
+host = "claude.ai"
+purpose = "auth"
+default = "deny"
+
+[[net]]
+host = "statsig.anthropic.com"
+purpose = "telemetry"
+default = "deny"
+
+[[net]]
+host = "*.sentry.io"
+purpose = "telemetry"
+default = "deny"
+
+[[net]]
+host = "registry.npmjs.org"
+purpose = "update-check"
+default = "deny"
+
+# User-level settings in the warden-owned home. apiKeyHelper makes Claude Code run
+# the warden credential helper instead of reading ANTHROPIC_API_KEY (and skips the
+# interactive "use this API key?" prompt). Without a helper the value is null, which
+# removes the key, and Claude Code falls back to the env var.
+[[emit]]
+path = "${home}/settings.json"
+format = "json"
+merge = "replace-key"
+key = "apiKeyHelper"
+template = "${key_helper_json}"

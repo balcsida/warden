@@ -19,3 +19,6 @@ url.workspace = true
 secrecy.workspace = true
 semver.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
