@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "warden: sandbox"
+description = "warden: platform sandbox backends and egress proxy"
 
 [lints]
 workspace = true
@@ -13,6 +13,16 @@ workspace = true
 [dependencies]
 warden-core.workspace = true
 thiserror.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 tracing.workspace = true
+tokio.workspace = true
+secrecy.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4"
+seccompiler = "0.5"
+
+[dev-dependencies]
+tempfile.workspace = true
