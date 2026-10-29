@@ -5,14 +5,20 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "warden: audit"
+description = "warden: audit events over OTLP"
 
 [lints]
 workspace = true
 
+[features]
+default = ["otlp"]
+otlp = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
+
 [dependencies]
 warden-core.workspace = true
-thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+opentelemetry = { version = "0.33", optional = true }
+opentelemetry_sdk = { version = "0.33", optional = true, default-features = false, features = ["logs"] }
+opentelemetry-otlp = { version = "0.33", optional = true, default-features = false, features = ["logs", "http-proto", "reqwest-blocking-client"] }

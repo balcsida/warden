@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "warden: identity"
+description = "warden: OIDC device-authorization identity"
 
 [lints]
 workspace = true
@@ -16,3 +16,8 @@ thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+secrecy.workspace = true
+url.workspace = true
+tokio.workspace = true
+openidconnect = "4"
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
