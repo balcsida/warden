@@ -266,6 +266,8 @@ fn harden() -> std::io::Result<()> {
     // ioctl(fd, TIOCSTI | TIOCLINUX, ...) -> deny
     let mut tty = Vec::new();
     for req in [libc::TIOCSTI, libc::TIOCLINUX] {
+        // c_ulong on glibc, c_int on musl
+        #[allow(clippy::unnecessary_cast)]
         let cond = SeccompCondition::new(1, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, req as u64)
             .map_err(io)?;
         tty.push(SeccompRule::new(vec![cond]).map_err(io)?);
