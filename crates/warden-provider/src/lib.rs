@@ -245,7 +245,7 @@ mod tests {
         let t = parse_rfc3339("2026-10-29T12:00:00Z").unwrap();
         assert_eq!(
             t.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
-            1793361600
+            1793275200
         );
         assert!(parse_rfc3339("garbage").is_none());
     }
