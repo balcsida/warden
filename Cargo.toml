@@ -1,0 +1,43 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/balcsida/warden"
+rust-version = "1.85"
+
+[workspace.dependencies]
+warden-core = { path = "crates/warden-core" }
+warden-policy = { path = "crates/warden-policy" }
+warden-sandbox = { path = "crates/warden-sandbox" }
+warden-provider = { path = "crates/warden-provider" }
+warden-identity = { path = "crates/warden-identity" }
+warden-audit = { path = "crates/warden-audit" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+url = { version = "2", features = ["serde"] }
+secrecy = { version = "0.10", features = ["serde"] }
+semver = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "blocking"] }
+tempfile = "3"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+[workspace.lints.clippy]
+dbg_macro = "warn"
+print_stdout = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

@@ -1,0 +1,21 @@
+[package]
+name = "warden-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "warden: traits, adapter schema, launch orchestration"
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+url.workspace = true
+secrecy.workspace = true
+semver.workspace = true
+tracing.workspace = true

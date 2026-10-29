@@ -1,0 +1,18 @@
+[package]
+name = "warden-identity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "warden: identity"
+
+[lints]
+workspace = true
+
+[dependencies]
+warden-core.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true

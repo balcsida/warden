@@ -1,0 +1,27 @@
+[package]
+name = "warden-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "warden: harness-neutral launcher for agentic coding tools"
+
+[[bin]]
+name = "warden"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+warden-core.workspace = true
+warden-policy.workspace = true
+warden-sandbox.workspace = true
+warden-provider.workspace = true
+warden-identity.workspace = true
+warden-audit.workspace = true
+anyhow.workspace = true
+clap = { version = "4", features = ["derive"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
