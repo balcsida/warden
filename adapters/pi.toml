@@ -14,10 +14,13 @@ env = "PI_CODING_AGENT_DIR"
 default = "${WARDEN_DATA}/homes/pi"
 
 # Preferred: first-class LiteLLM support through the pi-provider-litellm extension.
+# The key goes in LITELLM_API_KEY rather than LITELLM_API_KEY_HELPER: the extension
+# refuses to run a key helper during activation, and `pi -p` never refreshes later,
+# so helper-only auth has no models in print mode (src/index.ts seedModels). Switch to
+# key_helper_env = "LITELLM_API_KEY_HELPER" once the extension can opt in to that.
 [inject.litellm]
 base_url_env = "LITELLM_BASE_URL"
 key_env = "LITELLM_API_KEY"
-key_helper_env = "LITELLM_API_KEY_HELPER"
 model_args = ["--model", "litellm/${model}"]
 extra_env = { LITELLM_MODELS_DEV = "0" }
 requires = ["extension:pi-provider-litellm"]

@@ -873,8 +873,11 @@ Deviations from the design above, all deliberate:
   (a JSON identity, no IdP). Off by default; used by the test suites.
 - **`defaults.passthrough_env`** names parent variables (e.g. `SSH_AUTH_SOCK`)
   passed to the child on top of the built-in allowlist.
-- **Key helper**: Pi via `LITELLM_API_KEY_HELPER`, Claude Code via an emitted
-  `apiKeyHelper` in its settings. The helper is `warden __credential`, reading a
+- **Key helper**: Claude Code via an emitted `apiKeyHelper` in its settings. Pi
+  is wired for `LITELLM_API_KEY_HELPER` but the adapter ships with the plain env
+  key: pi-provider-litellm refuses to execute a helper during activation and
+  `pi -p` never refreshes afterwards, so helper-only auth has no models in print
+  mode. One adapter line flips it once the extension offers an opt-in. The helper is `warden __credential`, reading a
   `0600` Unix socket named in `WARDEN_CREDENTIAL_SOCK`.
 - **Conformance tests drive harnesses with pipes, not a PTY**; `-p`/`exec`/`run`
   modes don't need one, so `portable-pty` was not added.
