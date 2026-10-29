@@ -47,8 +47,8 @@ pub fn offered_formats(cfg: &ProviderConfig) -> Vec<ApiFormat> {
 fn litellm_url(root: &Url, format: ApiFormat) -> Url {
     let mut s = root.as_str().trim_end_matches('/').to_string();
     match format {
-        ApiFormat::Litellm => {}
-        ApiFormat::AnthropicMessages => s.push_str("/anthropic"),
+        // LiteLLM serves the native Anthropic API at <root>/v1/messages, so the root is the base URL.
+        ApiFormat::Litellm | ApiFormat::AnthropicMessages => {}
         ApiFormat::OpenaiChat | ApiFormat::OpenaiResponses => s.push_str("/v1"),
     }
     Url::parse(&s).expect("root was a url")
@@ -264,7 +264,7 @@ mod tests {
         let root: Url = "https://gw.example.com/".parse().unwrap();
         assert_eq!(
             litellm_url(&root, ApiFormat::AnthropicMessages).as_str(),
-            "https://gw.example.com/anthropic"
+            "https://gw.example.com/"
         );
         assert_eq!(
             litellm_url(&root, ApiFormat::OpenaiChat).as_str(),

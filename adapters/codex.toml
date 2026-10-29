@@ -33,6 +33,11 @@ purpose = "auth"
 default = "deny"
 
 [[net]]
+host = "ab.chatgpt.com"
+purpose = "telemetry"
+default = "deny"
+
+[[net]]
 host = "api.github.com"
 purpose = "update-check"
 default = "deny"

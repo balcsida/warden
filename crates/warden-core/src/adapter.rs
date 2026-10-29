@@ -106,6 +106,10 @@ pub struct Home {
 #[serde(deny_unknown_fields)]
 pub struct Inject {
     pub base_url_env: Option<String>,
+    /// Appended to the provider's base URL for this harness, e.g. `/v1` when its SDK
+    /// adds only `/messages` itself. Harnesses disagree on what "base URL" means.
+    #[serde(default)]
+    pub base_url_suffix: String,
     pub key_env: String,
     pub key_helper_env: Option<String>,
     #[serde(default)]
@@ -370,7 +374,11 @@ impl Adapter {
         }
         vars.insert(
             "base_url".into(),
-            ctx.base_url.as_str().trim_end_matches('/').into(),
+            format!(
+                "{}{}",
+                ctx.base_url.as_str().trim_end_matches('/'),
+                inject.base_url_suffix
+            ),
         );
         vars.insert("key_env".into(), inject.key_env.clone());
         vars.insert("model".into(), ctx.model.clone());
@@ -814,7 +822,10 @@ mod tests {
             "helper path must not expose the key"
         );
         assert!(!plan.env.contains_key("LITELLM_API_KEY"));
-        assert_eq!(plan.env["PI_OFFLINE"], "1");
+        assert!(
+            !plan.env.contains_key("PI_OFFLINE"),
+            "litellm table must not go offline"
+        );
         let argv: Vec<String> = plan
             .argv
             .iter()

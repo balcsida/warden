@@ -1,6 +1,7 @@
 # warden — design
 
-Status: draft for review. Nothing here is implemented yet.
+Status: accepted; milestone 1 implemented. Where the implementation deviates from
+the text below, §9 records it.
 
 `warden` launches an agentic coding harness (Claude Code, Codex, OpenCode, Pi, …)
 inside an OS sandbox, with provider credentials injected for the current user and
@@ -852,6 +853,36 @@ Q8 warden-owned harness homes. Q9 refuse without user namespaces unless
   makes "what did warden change" much harder to answer.
 - **Q9 Linux without user namespaces** (some hardened distros, older Docker-in-CI).
   Current plan is to refuse unless the bundle sets `sandbox.allow_degraded`. OK?
+## 9. Implementation notes (milestone 1)
+
+Deviations from the design above, all deliberate:
+
+- **ID token is cached in the OS keychain**, not memory only. Otherwise every
+  `warden run` would hit the IdP; the keychain is the user's own encrypted store.
+  The cached token is still signature-verified on every use.
+- **Reads are allowed everywhere except the deny list** (Seatbelt `(allow
+  file-read*)` minus `deny` paths; bwrap `--ro-bind / /` with `--tmpfs` over deny
+  paths). `readPath` decisions therefore only matter for adapter `[[fs]] ro`
+  entries and are otherwise informational. Codex makes the same trade-off.
+- **`ApiFormat::Litellm`** exists as a fourth format: the harness has first-class
+  LiteLLM support and gets the proxy root. A `static` provider may also declare
+  it (static key against a LiteLLM proxy).
+- **Static provider key from `WARDEN_STATIC_KEY_<ID>`** is accepted before the
+  keychain, for CI and headless hosts. The child never inherits it.
+- **`defaults.allow_dev_identity`** lets a bundle honour `WARDEN_DEV_IDENTITY`
+  (a JSON identity, no IdP). Off by default; used by the test suites.
+- **`defaults.passthrough_env`** names parent variables (e.g. `SSH_AUTH_SOCK`)
+  passed to the child on top of the built-in allowlist.
+- **Key helper**: Pi via `LITELLM_API_KEY_HELPER`, Claude Code via an emitted
+  `apiKeyHelper` in its settings. The helper is `warden __credential`, reading a
+  `0600` Unix socket named in `WARDEN_CREDENTIAL_SOCK`.
+- **Conformance tests drive harnesses with pipes, not a PTY**; `-p`/`exec`/`run`
+  modes don't need one, so `portable-pty` was not added.
+- **Linux**: Landlock is not used; bwrap does the filesystem, and the re-exec'd
+  helper adds `no_new_privs` plus a seccomp filter (socket families, ptrace,
+  io_uring, process_vm_*). Landlock can be layered later if a fleet lacks bwrap.
+- **`warden-adapters` crate folded into `warden-core`** (see §1).
+
 - **Q10 Name.** `warden` is taken on crates.io by an unrelated crate. Binary name can
   stay `warden`; the crate names can be `warden-*` only if those are free (they
   are, as of today), otherwise prefix with the org.

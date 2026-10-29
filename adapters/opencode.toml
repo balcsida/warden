@@ -8,6 +8,9 @@ executable = "opencode"
 version_args = ["--version"]
 install_hint = "npm install -g opencode-ai"
 
+# OpenCode resolves its global config, data, cache and state dirs from XDG; it reads
+# ~/.config/opencode even when OPENCODE_CONFIG_DIR is set. Point every XDG dir into
+# the warden-owned home so the user's own OpenCode config and auth stay out of reach.
 [home]
 env = "OPENCODE_CONFIG_DIR"
 default = "${WARDEN_DATA}/homes/opencode"
@@ -16,6 +19,7 @@ default = "${WARDEN_DATA}/homes/opencode"
 # and the key is referenced from the environment with {env:VAR}.
 [inject.anthropic-messages]
 key_env = "ANTHROPIC_API_KEY"
+base_url_suffix = "/v1"   # @ai-sdk/anthropic appends only /messages
 native_api = "@ai-sdk/anthropic"
 model_args = ["--model", "warden/${model}"]
 extra_env = { OPENCODE_CONFIG_CONTENT = '''{"$schema":"https://opencode.ai/config.json","provider":{"warden":{"npm":"${api}","name":"warden gateway","options":{"baseURL":"${base_url}","apiKey":"{env:${key_env}}"},"models":{"${model}":{"name":"${model}"}}}}}''' }
@@ -33,19 +37,13 @@ model_args = ["--model", "warden/${model}"]
 extra_env = { OPENCODE_CONFIG_CONTENT = '''{"$schema":"https://opencode.ai/config.json","provider":{"warden":{"npm":"${api}","name":"warden gateway","options":{"baseURL":"${base_url}","apiKey":"{env:${key_env}}"},"models":{"${model}":{"name":"${model}"}}}}}''' }
 
 [env]
+XDG_CONFIG_HOME = "${home}/xdg/config"
+XDG_DATA_HOME = "${home}/xdg/data"
+XDG_CACHE_HOME = "${home}/xdg/cache"
+XDG_STATE_HOME = "${home}/xdg/state"
 OPENCODE_DISABLE_AUTOUPDATE = "1"
 OPENCODE_DISABLE_SHARE = "1"
 OPENCODE_DISABLE_LSP_DOWNLOAD = "1"
-
-[[fs]]
-path = "~/.local/share/opencode"
-access = "rw"
-reason = "sessions, auth, sqlite"
-
-[[fs]]
-path = "~/.cache/opencode"
-access = "rw"
-reason = "cache"
 
 [[net]]
 host = "models.dev"

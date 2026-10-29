@@ -6,7 +6,6 @@
 //! Without it the test is skipped so `cargo test` stays hermetic.
 
 use std::collections::BTreeMap;
-use std::io::Read;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -189,7 +188,12 @@ fn harness_uses_injected_gateway() {
     };
     let (port, seen) = mock_gateway();
     let (format, args) = harness_setup(&harness);
-    let base_url = format!("http://127.0.0.1:{port}/v1");
+    // Anthropic clients append /v1/messages themselves; OpenAI clients expect the /v1 root.
+    let base_url = if format == "anthropic-messages" {
+        format!("http://127.0.0.1:{port}")
+    } else {
+        format!("http://127.0.0.1:{port}/v1")
+    };
 
     let root = tempfile::tempdir().unwrap();
     let config = root.path().join("config");
@@ -214,9 +218,9 @@ fn harness_uses_injected_gateway() {
     bundle["catalog"]["models"] =
         serde_json::json!({ MODEL: { "provider": "gw", "tier": "standard" } });
     bundle["catalog"]["default_model"] = serde_json::json!(MODEL);
-    // Pi via pi-provider-litellm prefers the litellm format: point it at the proxy root.
+    // Pi via pi-provider-litellm speaks the `litellm` format: a static key against the proxy root.
     if harness == "pi" {
-        bundle["providers"] = serde_json::json!([{ "kind": "litellm-static", "id": "gw", "base_url": format!("http://127.0.0.1:{port}") }]);
+        bundle["providers"] = serde_json::json!([{ "kind": "static", "id": "gw", "format": "litellm", "base_url": format!("http://127.0.0.1:{port}") }]);
     }
     let bundle_path = config.join("policy.bundle");
     std::fs::write(&bundle_path, serde_json::to_vec(&bundle).unwrap()).unwrap();

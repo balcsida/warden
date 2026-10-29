@@ -27,19 +27,23 @@ requires = ["extension:pi-provider-litellm"]
 key_env = "ANTHROPIC_API_KEY"
 native_api = "anthropic-messages"
 model_args = ["--model", "warden/${model}"]
+extra_env = { PI_OFFLINE = "1" }
 
 [inject.openai-responses]
 key_env = "OPENAI_API_KEY"
 native_api = "openai-responses"
 model_args = ["--model", "warden/${model}"]
+extra_env = { PI_OFFLINE = "1" }
 
 [inject.openai-chat]
 key_env = "OPENAI_API_KEY"
 native_api = "openai-completions"
 model_args = ["--model", "warden/${model}"]
+extra_env = { PI_OFFLINE = "1" }
 
+# PI_OFFLINE would also stop pi-provider-litellm's model discovery, so it is set only
+# on the non-LiteLLM tables; Pi's own catalog refresh to pi.dev is blocked by the proxy.
 [env]
-PI_OFFLINE = "1"
 PI_SKIP_VERSION_CHECK = "1"
 PI_TELEMETRY = "0"
 

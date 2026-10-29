@@ -175,7 +175,8 @@ where
 {
     let mut head = vec![first];
     let mut buf = [0u8; 1024];
-    while !head.ends_with(b"\r\n\r\n") {
+    // The first read often carries part of the body too; everything read is forwarded.
+    while !head.windows(4).any(|w| w == b"\r\n\r\n") {
         if head.len() > 16 * 1024 {
             return respond(&mut client, "431 Request Header Fields Too Large").await;
         }
