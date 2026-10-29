@@ -53,7 +53,7 @@ id = "probe"
 name = "probe"
 executable = "warden-probe-not-on-path"
 [detect]
-candidates = ["{exe}"]
+candidates = ['{exe}']
 [inject.openai-chat]
 base_url_env = "OPENAI_BASE_URL"
 key_env = "OPENAI_API_KEY"
