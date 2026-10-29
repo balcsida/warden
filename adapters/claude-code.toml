@@ -21,6 +21,8 @@ model_env = "ANTHROPIC_MODEL"
 extra_env = { CLAUDE_CODE_API_KEY_HELPER_TTL_MS = "300000" }
 
 [env]
+# Default scratch dir is /tmp/claude-<uid>, outside every writable root.
+CLAUDE_CODE_TMPDIR = "${home}/tmp"
 DISABLE_AUTOUPDATER = "1"
 DISABLE_TELEMETRY = "1"
 DISABLE_ERROR_REPORTING = "1"
