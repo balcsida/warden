@@ -50,6 +50,36 @@ pub fn dispatch(cli: &Cli) -> Result<ExitCode, Fail> {
             args,
         } => launch(cli, harness, model.as_deref(), *dry_run, *no_sandbox, args),
         Cmd::Doctor => crate::doctor::run(cli),
+        Cmd::MintServe {
+            listen,
+            litellm_url,
+            master_key_env,
+            teams,
+            allow_dev_identity,
+        } => {
+            let master_key = std::env::var(master_key_env)
+                .map_err(|_| Fail::new(EX_CONFIG, format!("{master_key_env} is not set")))?;
+            let teams = teams
+                .iter()
+                .map(|t| {
+                    t.split_once('=')
+                        .map(|(g, id)| (g.to_string(), id.to_string()))
+                        .ok_or_else(|| {
+                            Fail::new(EX_USAGE, format!("--team expects GROUP=TEAM_ID, got `{t}`"))
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            crate::mint::run(
+                cli,
+                crate::mint::Config {
+                    listen: listen.clone(),
+                    litellm_url: litellm_url.clone(),
+                    master_key: SecretString::from(master_key),
+                    teams,
+                    allow_dev_identity: *allow_dev_identity,
+                },
+            )
+        }
         Cmd::Policy { cmd } => crate::policy_cmd::dispatch(cli, cmd),
         Cmd::Provider {
             cmd: crate::ProviderCmd::SetKey { id },
@@ -98,7 +128,7 @@ pub fn identity(
             subject: d.subject,
             email: d.email,
             groups: d.groups,
-            id_token: SecretString::from("dev-identity"),
+            id_token: SecretString::from(format!("dev:{raw}")),
             expires_at: std::time::SystemTime::now() + Duration::from_secs(3600),
         });
     }

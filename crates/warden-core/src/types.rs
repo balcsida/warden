@@ -328,6 +328,10 @@ pub enum ProviderConfig {
     Litellm {
         id: String,
         base_url: Url,
+        /// Minting service (`warden mint-serve`) that holds the LiteLLM master key.
+        /// Without it the client calls `/key/generate` itself with the ID token (LiteLLM JWT auth).
+        #[serde(default)]
+        mint_url: Option<Url>,
     },
 }
 

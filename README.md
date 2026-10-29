@@ -74,12 +74,22 @@ system `sandbox-exec`.
    public key in `/etc/warden/trusted-keys` (Linux) or
    `/Library/Application Support/warden/trusted-keys` (macOS) on every machine,
    via MDM or your image.
-2. Write a bundle. Start from `examples/policy.bundle`: identity provider,
+2. Decide how keys are minted. With LiteLLM JWT auth, the client calls
+   `/key/generate` with the user's ID token directly. Without it (OSS LiteLLM),
+   run the mint service somewhere that can reach the proxy and the IdP, and set
+   the provider's `mint_url` to it:
+   ```
+   LITELLM_MASTER_KEY=sk-... warden mint-serve --policy policy.bundle \
+     --litellm-url https://gw.example.com --team engineering=team-eng --listen 0.0.0.0:8787
+   ```
+   It verifies the caller's ID token, re-checks the bundle's policy for that user,
+   and mints a scoped, TTL-bound key. The master key never reaches a laptop.
+3. Write a bundle. Start from `examples/policy.bundle`: identity provider,
    providers (a LiteLLM proxy, or a static gateway key), the catalog of harnesses,
    models, hosts and paths, and Cedar policies keyed on IdP groups.
-3. `warden policy sign policy.bundle --key -` and distribute `policy.bundle` plus
+4. `warden policy sign policy.bundle --key -` and distribute `policy.bundle` plus
    `policy.bundle.sig` to `~/.config/warden/` (or the system dir).
-4. Developers run `warden login`, then `warden run <harness>`.
+5. Developers run `warden login`, then `warden run <harness>`.
 
 Harness adapters are TOML files in `adapters/`, embedded in the binary. Drop an
 override in `~/.config/warden/adapters/<id>.toml` to change or add one.

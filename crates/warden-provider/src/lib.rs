@@ -22,9 +22,14 @@ pub fn from_config(cfg: &ProviderConfig, litellm_http: Option<LiteLlmHttp>) -> B
             format: *format,
             base_url: base_url.clone(),
         }),
-        ProviderConfig::Litellm { id, base_url } => Box::new(LiteLlmProvider {
+        ProviderConfig::Litellm {
+            id,
+            base_url,
+            mint_url,
+        } => Box::new(LiteLlmProvider {
             id: id.clone(),
             base_url: base_url.clone(),
+            mint_url: mint_url.clone(),
             http: litellm_http.unwrap_or_default(),
         }),
     }
@@ -131,14 +136,47 @@ impl Default for LiteLlmHttp {
 pub struct LiteLlmProvider {
     pub id: String,
     pub base_url: Url,
+    pub mint_url: Option<Url>,
     pub http: LiteLlmHttp,
 }
 
-#[derive(serde::Deserialize)]
-struct KeyResponse {
-    key: String,
+/// Wire format between the client and `warden mint-serve` (`POST {mint_url}/v1/mint`,
+/// `Authorization: Bearer <id_token>`). The response is LiteLLM's `/key/generate` body.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MintRequest {
+    pub harness: String,
+    pub models: Vec<String>,
+    pub ttl_secs: u64,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct KeyResponse {
+    pub key: String,
     #[serde(default)]
-    expires: Option<String>,
+    pub expires: Option<String>,
+}
+
+/// Body warden sends to LiteLLM's `/key/generate`; shared by the direct path and the mint server.
+pub fn key_generate_body(
+    subject: &str,
+    harness: &str,
+    models: &[String],
+    ttl: Duration,
+    max_budget_usd: Option<f64>,
+    team_id: Option<&str>,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "duration": format!("{}s", ttl.as_secs().max(60)),
+        "models": models,
+        "max_budget": max_budget_usd,
+        "user_id": subject,
+        "key_alias": format!("warden/{subject}/{harness}/{}", warden_core::now_secs()),
+        "metadata": { "harness": harness, "issued_by": "warden" },
+    });
+    if let Some(t) = team_id {
+        body["team_id"] = serde_json::json!(t);
+    }
+    body
 }
 
 impl Provider for LiteLlmProvider {
@@ -150,6 +188,7 @@ impl Provider for LiteLlmProvider {
         let format = *offered_formats(&ProviderConfig::Litellm {
             id: self.id.clone(),
             base_url: self.base_url.clone(),
+            mint_url: None,
         })
         .iter()
         .find(|f| req.formats.contains(f))
@@ -158,35 +197,47 @@ impl Provider for LiteLlmProvider {
             .timeout(self.http.timeout)
             .build()
             .map_err(|e| ProviderError::Other(e.to_string()))?;
-        let ttl_secs = req.ttl.as_secs().max(60);
-        let body = serde_json::json!({
-            "duration": format!("{ttl_secs}s"),
-            "models": req.models,
-            "max_budget": self.http.max_budget_usd,
-            "user_id": req.identity.subject,
-            "key_alias": format!("warden/{}/{}/{}", req.identity.subject, req.harness, warden_core::now_secs()),
-            "metadata": { "harness": req.harness, "issued_by": "warden" },
-        });
-        let url = litellm_url(&self.base_url, ApiFormat::Litellm)
-            .join("key/generate")
-            .expect("url");
+        let (url, body) = match &self.mint_url {
+            Some(m) => (
+                m.join("v1/mint").expect("url"),
+                serde_json::to_value(MintRequest {
+                    harness: req.harness.into(),
+                    models: req.models.to_vec(),
+                    ttl_secs: req.ttl.as_secs(),
+                })
+                .expect("json"),
+            ),
+            None => (
+                litellm_url(&self.base_url, ApiFormat::Litellm)
+                    .join("key/generate")
+                    .expect("url"),
+                key_generate_body(
+                    &req.identity.subject,
+                    req.harness,
+                    req.models,
+                    req.ttl,
+                    self.http.max_budget_usd,
+                    None,
+                ),
+            ),
+        };
         let resp = client
-            .post(url)
+            .post(url.clone())
             .bearer_auth(req.identity.id_token.expose_secret())
             .json(&body)
             .send()
-            .map_err(|e| ProviderError::Other(format!("litellm key/generate: {e}")))?;
+            .map_err(|e| ProviderError::Other(format!("{url}: {e}")))?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().unwrap_or_default();
             return Err(ProviderError::Other(format!(
-                "litellm key/generate returned {status}: {}",
+                "{url} returned {status}: {}",
                 text.chars().take(300).collect::<String>()
             )));
         }
         let kr: KeyResponse = resp
             .json()
-            .map_err(|e| ProviderError::Other(format!("litellm key/generate body: {e}")))?;
+            .map_err(|e| ProviderError::Other(format!("{url} body: {e}")))?;
         let expires_at = kr
             .expires
             .as_deref()
@@ -314,6 +365,7 @@ mod tests {
         let p = LiteLlmProvider {
             id: "gw".into(),
             base_url: format!("http://127.0.0.1:{port}").parse().unwrap(),
+            mint_url: None,
             http: LiteLlmHttp {
                 timeout: Duration::from_secs(5),
                 max_budget_usd: Some(5.0),

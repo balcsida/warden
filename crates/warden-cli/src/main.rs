@@ -2,6 +2,7 @@
 
 mod dirs;
 mod doctor;
+mod mint;
 mod policy_cmd;
 mod probe;
 mod run;
@@ -65,6 +66,24 @@ pub enum Cmd {
     Policy {
         #[command(subcommand)]
         cmd: PolicyCmd,
+    },
+    /// Server side: mint LiteLLM virtual keys for IdP-authenticated users (no LiteLLM Enterprise needed)
+    MintServe {
+        /// Address to listen on
+        #[arg(long, default_value = "127.0.0.1:8787")]
+        listen: String,
+        /// LiteLLM proxy root URL
+        #[arg(long)]
+        litellm_url: url::Url,
+        /// Environment variable holding the LiteLLM master key
+        #[arg(long, default_value = "LITELLM_MASTER_KEY")]
+        master_key_env: String,
+        /// IdP group -> LiteLLM team_id mapping, repeatable; first match wins
+        #[arg(long = "team", value_name = "GROUP=TEAM_ID")]
+        teams: Vec<String>,
+        /// Accept `dev:<json>` bearer tokens when the bundle also allows dev identities (tests only)
+        #[arg(long, hide = true)]
+        allow_dev_identity: bool,
     },
     /// Manage provider secrets for the `static` provider
     Provider {

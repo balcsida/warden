@@ -163,6 +163,17 @@ OTLP to the org collector, asynchronous, bounded queue, never blocks launch.
   (persisted spool), not milestone 1.
 - Audit events never contain credentials, prompts, or file contents.
 
+### C6b The mint server (optional)
+
+`warden mint-serve` holds the LiteLLM master key, so it is the most sensitive
+component when deployed. It accepts only IdP-signed ID tokens (signature, issuer,
+audience, expiry checked against the IdP's JWKS), re-evaluates the signed bundle
+for that user, and never returns anything but a scoped virtual key. Run it on an
+internal network, behind TLS, with the master key injected from a secret store;
+its logs name the user, harness and models for every mint and never the key.
+Compromise of the host = compromise of the master key, exactly as for the proxy
+host itself.
+
 ### C7 The bypass that warden cannot close
 
 A developer can run `claude`, `codex`, `pi` or `opencode` directly, with a

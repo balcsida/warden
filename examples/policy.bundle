@@ -2,7 +2,7 @@
   "meta": { "version": "2026.10.29-1", "issuer": "example-org platform team", "issued_at": 1793232000, "not_after": 1825000000 },
   "identity": { "issuer": "https://idp.example.com", "client_id": "warden-cli", "groups_claim": "groups" },
   "providers": [
-    { "kind": "litellm", "id": "gw", "base_url": "https://gw.example.com" }
+    { "kind": "litellm", "id": "gw", "base_url": "https://gw.example.com", "mint_url": "https://warden-mint.example.com" }
   ],
   "defaults": { "credential_ttl": 28800, "max_budget_usd": 25.0, "not_after_grace": 604800 },
   "catalog": {

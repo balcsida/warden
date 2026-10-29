@@ -34,9 +34,11 @@ serde_json.workspace = true
 secrecy.workspace = true
 url.workspace = true
 tempfile.workspace = true
+reqwest.workspace = true
+tiny_http = "0.12"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
-tiny_http = "0.12"
+reqwest.workspace = true

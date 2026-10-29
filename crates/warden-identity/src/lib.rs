@@ -188,6 +188,32 @@ fn save(cfg: &IdentityConfig, stored: &Stored) -> Result<(), IdentityError> {
         .map_err(|e| IdentityError::Keychain(e.to_string()))
 }
 
+/// Verify a raw ID token (signature via the issuer's JWKS, issuer, audience, expiry)
+/// and return the identity it asserts. Used by `warden mint-serve`.
+pub fn verify_id_token(cfg: &IdentityConfig, token: &str) -> Result<Identity, IdentityError> {
+    rt().block_on(async {
+        let http = http_client()?;
+        let c = client(cfg, &http).await?;
+        let id_token: openidconnect::IdToken<
+            Extra,
+            CoreGenderClaim,
+            CoreJweContentEncryptionAlgorithm,
+            CoreJwsSigningAlgorithm,
+        > = token.parse().map_err(perr)?;
+        let claims = id_token
+            .claims(&c.id_token_verifier(), |_: Option<&Nonce>| Ok(()))
+            .map_err(perr)?;
+        Ok(Identity {
+            subject: claims.subject().to_string(),
+            email: claims.email().map(|e| e.to_string()),
+            groups: groups_from(&claims.additional_claims().0, &cfg.groups_claim),
+            id_token: SecretString::from(token.to_string()),
+            expires_at: UNIX_EPOCH
+                + Duration::from_secs(claims.expiration().timestamp().max(0) as u64),
+        })
+    })
+}
+
 fn rt() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()

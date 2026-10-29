@@ -803,7 +803,8 @@ It is not subject to the harness allowlist.
 ## 8. Open questions
 
 Decisions taken 2026-10-29 (the recommendations below were accepted):
-Q1 copy, don't depend. Q2 no MITM. Q3 LiteLLM JWT auth with the user's ID token.
+Q1 copy, don't depend. Q2 no MITM. Q3 LiteLLM JWT auth with the user's ID token,
+plus `warden mint-serve` for proxies without JWT auth (added 2026-10-29, see §9).
 Q4 key-helper socket in milestone 1; proxy header rewrite deferred. Q5 one model id
 per provider, no per-harness alias. Q6 cargo-dist. Q7 Windows refuses in milestone 1.
 Q8 warden-owned harness homes. Q9 refuse without user namespaces unless
@@ -885,6 +886,17 @@ Deviations from the design above, all deliberate:
   helper adds `no_new_privs` plus a seccomp filter (socket families, ptrace,
   io_uring, process_vm_*). Landlock can be layered later if a fleet lacks bwrap.
 - **`warden-adapters` crate folded into `warden-core`** (see §1).
+- **`warden mint-serve`**: for LiteLLM deployments without JWT auth (OSS). The
+  `litellm` provider takes an optional `mint_url`; the client then POSTs
+  `{harness, models, ttl_secs}` with its ID token as bearer to `{mint_url}/v1/mint`
+  instead of calling `/key/generate` itself. The server holds the master key,
+  verifies the token against the IdP's JWKS (`warden_identity::verify_id_token`),
+  loads the same signed bundle, re-runs the `launch` and `useModel` decisions for
+  that user (the client's model list is only a filter), caps the TTL at the
+  bundle default, maps IdP groups to a LiteLLM `team_id` via `--team GROUP=ID`,
+  and returns LiteLLM's `/key/generate` response. Stateless; run it anywhere that
+  can reach the proxy and the IdP. This is the first control-plane piece and is
+  deliberately a subcommand of the same binary.
 
 - **Q10 Name.** `warden` is taken on crates.io by an unrelated crate. Binary name can
   stay `warden`; the crate names can be `warden-*` only if those are free (they
