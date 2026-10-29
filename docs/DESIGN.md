@@ -885,6 +885,9 @@ Deviations from the design above, all deliberate:
 - **Linux**: Landlock is not used; bwrap does the filesystem, and the re-exec'd
   helper adds `no_new_privs` plus a seccomp filter (socket families, ptrace,
   io_uring, process_vm_*). Landlock can be layered later if a fleet lacks bwrap.
+  bwrap brings `lo` up itself under `--unshare-net`, so the helper needs no
+  capability; it keeps the proxy bridge in-process and runs the harness as a
+  child (PDEATHSIG) rather than exec'ing it.
 - **`warden-adapters` crate folded into `warden-core`** (see §1).
 - **`warden mint-serve`**: for LiteLLM deployments without JWT auth (OSS). The
   `litellm` provider takes an optional `mint_url`; the client then POSTs
