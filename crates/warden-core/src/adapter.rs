@@ -285,14 +285,12 @@ impl Adapter {
     /// Resolve the executable: `[detect].candidates` first, then PATH.
     pub fn locate(&self) -> Result<Located, AdapterError> {
         let exe = &self.harness.executable;
-        let candidates = self
+        let path = self
             .detect
             .candidates
             .iter()
-            .map(|c| PathBuf::from(expand_tilde(c)));
-        let path = candidates
-            .filter(|p| p.is_file())
-            .next()
+            .map(|c| PathBuf::from(expand_tilde(c)))
+            .find(|p| p.is_file())
             .or_else(|| find_on_path(exe))
             .ok_or_else(|| AdapterError::NotFound {
                 id: self.harness.id.clone(),
