@@ -801,6 +801,13 @@ It is not subject to the harness allowlist.
 
 ## 8. Open questions
 
+Decisions taken 2026-10-29 (the recommendations below were accepted):
+Q1 copy, don't depend. Q2 no MITM. Q3 LiteLLM JWT auth with the user's ID token.
+Q4 key-helper socket in milestone 1; proxy header rewrite deferred. Q5 one model id
+per provider, no per-harness alias. Q6 cargo-dist. Q7 Windows refuses in milestone 1.
+Q8 warden-owned harness homes. Q9 refuse without user namespaces unless
+`sandbox.allow_degraded`. Q10 binary `warden`, crates `warden-*`.
+
 - **Q1 codex-rs reuse scope.** The codex sandbox crates are not on crates.io and
   pull in the codex workspace. Proposal: copy the two `.sbpl` files and the bwrap
   argument builder (`linux-sandbox/src/bwrap.rs`) with header attribution and a
