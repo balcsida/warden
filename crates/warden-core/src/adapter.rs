@@ -808,14 +808,17 @@ mod tests {
     }
 
     #[test]
-    fn pi_litellm_plan_uses_env_key_and_emits_nothing() {
+    fn pi_litellm_plan_uses_key_helper_and_emits_nothing() {
         let tmp = tempfile::tempdir().unwrap();
         let pi = AdapterSet::load(None).unwrap().get("pi").unwrap().clone();
         let plan = pi.plan(&ctx(ApiFormat::Litellm, tmp.path())).unwrap();
         assert_eq!(plan.env["LITELLM_BASE_URL"], "https://gw.example.com");
-        // pi-provider-litellm cannot run a key helper at activation, so the key is in env
-        assert_eq!(plan.secret_env.as_ref().unwrap().0, "LITELLM_API_KEY");
-        assert!(!plan.env.contains_key("LITELLM_API_KEY_HELPER"));
+        assert!(plan.secret_env.is_none(), "key must not be in env");
+        assert_eq!(
+            plan.env["LITELLM_API_KEY_HELPER"],
+            "/opt/warden __credential"
+        );
+        assert_eq!(plan.env["LITELLM_STARTUP_KEY_HELPER"], "1");
         assert!(
             !plan.env.contains_key("PI_OFFLINE"),
             "litellm table must not go offline"
