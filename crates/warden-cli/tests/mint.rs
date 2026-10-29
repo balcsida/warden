@@ -19,7 +19,9 @@ fn free_port() -> u16 {
 }
 
 /// Records every /key/generate call: (authorization header, body).
-fn mock_litellm() -> (u16, Arc<Mutex<Vec<(String, serde_json::Value)>>>) {
+type Calls = Arc<Mutex<Vec<(String, serde_json::Value)>>>;
+
+fn mock_litellm() -> (u16, Calls) {
     let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
     let port = server.server_addr().to_ip().unwrap().port();
     let seen: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::default();
