@@ -44,6 +44,9 @@ pub fn bwrap_args(spec: &SandboxSpec, self_exe: &Path, argv: &[OsString]) -> Vec
         "--unshare-user".into(),
         "--unshare-pid".into(),
         "--unshare-net".into(),
+        // only for the helper's loopback ioctl; it drops every capability before exec
+        "--cap-add".into(),
+        "CAP_NET_ADMIN".into(),
         "--ro-bind".into(),
         "/".into(),
         "/".into(),
@@ -158,6 +161,9 @@ pub fn run_helper(args: &[OsString]) -> ! {
         if let Err(e) = loopback_up() {
             die(&format!("loopback up: {e}"));
         }
+        if let Err(e) = drop_caps() {
+            die(&format!("drop capabilities: {e}"));
+        }
         std::thread::spawn(move || {
             if let Err(e) = crate::proxy::run_bridge(&uds, proxy_port) {
                 eprintln!("warden: proxy bridge failed: {e}");
@@ -211,6 +217,58 @@ fn loopback_up() -> std::io::Result<()> {
         libc::close(fd);
         if rc < 0 { Err(e) } else { Ok(()) }
     }
+}
+
+/// Clear ambient, effective, permitted and inheritable sets: CAP_NET_ADMIN was
+/// only needed for `loopback_up`. NO_NEW_PRIVS (in `harden`) stops file
+/// capabilities from granting it back.
+fn drop_caps() -> std::io::Result<()> {
+    // libc has no capset binding; these mirror <linux/capability.h> (v3 = two data words).
+    #[repr(C)]
+    struct Header {
+        version: u32,
+        pid: i32,
+    }
+    #[repr(C)]
+    struct Data {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
+    const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+    let hdr = Header {
+        version: LINUX_CAPABILITY_VERSION_3,
+        pid: 0,
+    };
+    let data = [
+        Data {
+            effective: 0,
+            permitted: 0,
+            inheritable: 0,
+        },
+        Data {
+            effective: 0,
+            permitted: 0,
+            inheritable: 0,
+        },
+    ];
+    // SAFETY: prctl/capset with constant arguments and valid, correctly laid out pointers.
+    unsafe {
+        if libc::prctl(
+            libc::PR_CAP_AMBIENT,
+            libc::PR_CAP_AMBIENT_CLEAR_ALL,
+            0,
+            0,
+            0,
+        ) != 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        if libc::syscall(libc::SYS_capset, &hdr as *const Header, data.as_ptr()) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
 }
 
 /// Defence in depth under bwrap: no new privileges, and a seccomp filter that
@@ -320,6 +378,10 @@ mod tests {
             .map(|s| s.to_string_lossy().into())
             .collect();
         assert!(a.contains(&"--unshare-net".to_string()));
+        assert!(
+            a.windows(2)
+                .any(|w| w[0] == "--cap-add" && w[1] == "CAP_NET_ADMIN")
+        );
         let hooks = ws.join(".git/hooks").display().to_string();
         assert!(a.windows(3).any(|w| w[0] == "--ro-bind" && w[1] == hooks));
         assert!(a.windows(2).any(|w| w[0] == "--tmpfs"));
