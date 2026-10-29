@@ -1,6 +1,6 @@
-//! Linux backend: bubblewrap for mounts and namespaces, then a re-exec'd helper
-//! (`warden __linux-sandbox`) that brings loopback up, starts the proxy bridge,
-//! applies Landlock + seccomp and execs the harness. Layout follows
+//! Linux backend: bubblewrap for mounts, namespaces and loopback, then a
+//! re-exec'd helper (`warden __linux-sandbox`) that starts the proxy bridge,
+//! applies seccomp and execs the harness. Layout follows
 //! openai/codex `codex-rs/linux-sandbox` (see THIRD_PARTY_NOTICES.md).
 
 use std::ffi::OsString;
@@ -44,9 +44,6 @@ pub fn bwrap_args(spec: &SandboxSpec, self_exe: &Path, argv: &[OsString]) -> Vec
         "--unshare-user".into(),
         "--unshare-pid".into(),
         "--unshare-net".into(),
-        // only for the helper's loopback ioctl; it drops every capability before exec
-        "--cap-add".into(),
-        "CAP_NET_ADMIN".into(),
         "--ro-bind".into(),
         "/".into(),
         "/".into(),
@@ -158,12 +155,7 @@ pub fn run_helper(args: &[OsString]) -> ! {
         die("no command");
     }
     if let Some(uds) = proxy_uds {
-        if let Err(e) = loopback_up() {
-            die(&format!("loopback up: {e}"));
-        }
-        if let Err(e) = drop_caps() {
-            die(&format!("drop capabilities: {e}"));
-        }
+        // bwrap brings `lo` up in the new namespace before dropping its caps
         std::thread::spawn(move || {
             if let Err(e) = crate::proxy::run_bridge(&uds, proxy_port) {
                 eprintln!("warden: proxy bridge failed: {e}");
@@ -174,9 +166,25 @@ pub fn run_helper(args: &[OsString]) -> ! {
     if let Err(e) = harden() {
         die(&format!("sandbox hardening failed: {e}"));
     }
+    // The bridge lives in this process, so the harness runs as a child instead of
+    // replacing us (exec would kill the bridge thread). PDEATHSIG ties its life
+    // to ours; bwrap's --die-with-parent ties ours to warden's.
     use std::os::unix::process::CommandExt;
-    let err = std::process::Command::new(&argv[0]).args(&argv[1..]).exec();
-    die(&format!("exec {:?}: {err}", argv[0]));
+    let mut cmd = std::process::Command::new(&argv[0]);
+    cmd.args(&argv[1..]);
+    // SAFETY: the pre_exec hook only calls prctl, which is async-signal-safe.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    match cmd.status() {
+        Ok(status) => std::process::exit(crate::unix::exit_code(status)),
+        Err(e) => die(&format!("exec {:?}: {e}", argv[0])),
+    }
 }
 
 fn die(msg: &str) -> ! {
@@ -191,84 +199,6 @@ fn wait_for_port(port: u16) {
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-}
-
-/// New network namespaces start with `lo` down. We hold CAP_NET_ADMIN over the
-/// namespace bwrap created, so one ioctl brings it up.
-fn loopback_up() -> std::io::Result<()> {
-    // SAFETY: plain libc socket/ioctl calls on a zeroed ifreq; fd is closed on every path.
-    unsafe {
-        let fd = libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
-        if fd < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let mut ifr: libc::ifreq = std::mem::zeroed();
-        for (i, b) in b"lo".iter().enumerate() {
-            ifr.ifr_name[i] = *b as libc::c_char;
-        }
-        if libc::ioctl(fd, libc::SIOCGIFFLAGS as _, &mut ifr) < 0 {
-            let e = std::io::Error::last_os_error();
-            libc::close(fd);
-            return Err(e);
-        }
-        ifr.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
-        let rc = libc::ioctl(fd, libc::SIOCSIFFLAGS as _, &ifr);
-        let e = std::io::Error::last_os_error();
-        libc::close(fd);
-        if rc < 0 { Err(e) } else { Ok(()) }
-    }
-}
-
-/// Clear ambient, effective, permitted and inheritable sets: CAP_NET_ADMIN was
-/// only needed for `loopback_up`. NO_NEW_PRIVS (in `harden`) stops file
-/// capabilities from granting it back.
-fn drop_caps() -> std::io::Result<()> {
-    // libc has no capset binding; these mirror <linux/capability.h> (v3 = two data words).
-    #[repr(C)]
-    struct Header {
-        version: u32,
-        pid: i32,
-    }
-    #[repr(C)]
-    struct Data {
-        effective: u32,
-        permitted: u32,
-        inheritable: u32,
-    }
-    const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
-    let hdr = Header {
-        version: LINUX_CAPABILITY_VERSION_3,
-        pid: 0,
-    };
-    let data = [
-        Data {
-            effective: 0,
-            permitted: 0,
-            inheritable: 0,
-        },
-        Data {
-            effective: 0,
-            permitted: 0,
-            inheritable: 0,
-        },
-    ];
-    // SAFETY: prctl/capset with constant arguments and valid, correctly laid out pointers.
-    unsafe {
-        if libc::prctl(
-            libc::PR_CAP_AMBIENT,
-            libc::PR_CAP_AMBIENT_CLEAR_ALL,
-            0,
-            0,
-            0,
-        ) != 0
-        {
-            return Err(std::io::Error::last_os_error());
-        }
-        if libc::syscall(libc::SYS_capset, &hdr as *const Header, data.as_ptr()) != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-    }
-    Ok(())
 }
 
 /// Defence in depth under bwrap: no new privileges, and a seccomp filter that
@@ -378,10 +308,6 @@ mod tests {
             .map(|s| s.to_string_lossy().into())
             .collect();
         assert!(a.contains(&"--unshare-net".to_string()));
-        assert!(
-            a.windows(2)
-                .any(|w| w[0] == "--cap-add" && w[1] == "CAP_NET_ADMIN")
-        );
         let hooks = ws.join(".git/hooks").display().to_string();
         assert!(a.windows(3).any(|w| w[0] == "--ro-bind" && w[1] == hooks));
         assert!(a.windows(2).any(|w| w[0] == "--tmpfs"));

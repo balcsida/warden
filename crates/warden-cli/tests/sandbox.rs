@@ -138,7 +138,10 @@ fn sandbox_blocks_read_write_and_connect() {
     );
 
     let (stdout, stderr, status) = run(&[]);
-    assert!(status.success(), "run failed: {stderr}\n{stdout}");
+    assert!(
+        status.success(),
+        "run failed ({status}): {stderr}\n{stdout}"
+    );
     assert!(stdout.contains("read=denied"), "{stdout}\n{stderr}");
     assert!(stdout.contains("write=denied"), "{stdout}\n{stderr}");
     assert!(stdout.contains("direct=denied"), "{stdout}\n{stderr}");
@@ -147,7 +150,7 @@ fn sandbox_blocks_read_write_and_connect() {
         stderr.contains(&format!(
             "blocked connection from probe to 127.0.0.1:{other_port}"
         )),
-        "{stderr}"
+        "{stdout}\n{stderr}"
     );
 
     // same probe against the allowlisted port via the proxy succeeds
