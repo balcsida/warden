@@ -220,7 +220,8 @@ Backends in milestone 1:
 - `LinuxSandbox`: `bwrap` (bundled as a vendored static binary like codex's
   `bundled_bwrap.rs`, or the system one if present and new enough) with
   `--ro-bind / /`, `--bind` per `read_write`, `--tmpfs` over `deny_read` entries,
-  `--unshare-net`, `--unshare-pid`, `--die-with-parent`, `--new-session`. Inside the
+  `--unshare-net`, `--unshare-pid`, `--die-with-parent` (no `--new-session`: the
+  harness keeps the tty for Ctrl-C; seccomp denies TIOCSTI/TIOCLINUX). Inside the
   new net namespace a loopback-only listener is needed for the proxy: warden passes
   the proxy's Unix socket into the sandbox (`--bind <uds> <uds>`) and runs
   `warden __proxy-bridge` as PID 1's helper which listens on `127.0.0.1:<port>` in

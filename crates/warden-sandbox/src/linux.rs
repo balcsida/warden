@@ -39,7 +39,6 @@ fn user_namespaces_available() -> bool {
 /// bwrap argv (without the bwrap binary itself), ending in `-- <self> __linux-sandbox ... -- argv`.
 pub fn bwrap_args(spec: &SandboxSpec, self_exe: &Path, argv: &[OsString]) -> Vec<OsString> {
     let mut a: Vec<OsString> = vec![
-        "--new-session".into(),
         "--die-with-parent".into(),
         "--unshare-user".into(),
         "--unshare-pid".into(),
@@ -117,6 +116,15 @@ impl Sandbox for LinuxSandbox {
         let bwrap = find_bwrap(self.bwrap.as_deref())
             .ok_or_else(|| SandboxError::Preflight("bwrap missing".into()))?;
         let self_exe = std::env::current_exe()?;
+        // No --new-session, so the harness stays in the terminal's foreground group
+        // and gets Ctrl-C itself. bwrap and its init inherit SIG_IGN and survive it;
+        // the helper restores SIG_DFL for the harness. Terminal input injection is
+        // closed by the TIOCSTI/TIOCLINUX seccomp rule instead.
+        // SAFETY: signal(2) with constant arguments.
+        unsafe {
+            libc::signal(libc::SIGINT, libc::SIG_IGN);
+            libc::signal(libc::SIGQUIT, libc::SIG_IGN);
+        }
         crate::unix::spawn(&bwrap.into(), &bwrap_args(spec, &self_exe, argv), spec)
     }
     fn wait(&self, child: &mut LaunchedChild) -> Result<ExitStatus, SandboxError> {
@@ -172,12 +180,14 @@ pub fn run_helper(args: &[OsString]) -> ! {
     use std::os::unix::process::CommandExt;
     let mut cmd = std::process::Command::new(&argv[0]);
     cmd.args(&argv[1..]);
-    // SAFETY: the pre_exec hook only calls prctl, which is async-signal-safe.
+    // SAFETY: the pre_exec hook only calls prctl and signal, both async-signal-safe.
     unsafe {
         cmd.pre_exec(|| {
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+            libc::signal(libc::SIGQUIT, libc::SIG_DFL);
             Ok(())
         });
     }
@@ -203,7 +213,8 @@ fn wait_for_port(port: u16) {
 
 /// Defence in depth under bwrap: no new privileges, and a seccomp filter that
 /// leaves only AF_UNIX and AF_INET-to-loopback sockets usable (the namespace has
-/// nothing else anyway) and blocks ptrace/io_uring/process_vm_*.
+/// nothing else anyway), blocks ptrace/io_uring/process_vm_* and the terminal
+/// input-injection ioctls (we share the controlling tty with the user).
 fn harden() -> std::io::Result<()> {
     use seccompiler::{
         BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
@@ -252,6 +263,14 @@ fn harden() -> std::io::Result<()> {
         libc::SYS_socket,
         vec![SeccompRule::new(vec![not_unix, not_inet, not_inet6]).map_err(io)?],
     );
+    // ioctl(fd, TIOCSTI | TIOCLINUX, ...) -> deny
+    let mut tty = Vec::new();
+    for req in [libc::TIOCSTI, libc::TIOCLINUX] {
+        let cond = SeccompCondition::new(1, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, req as u64)
+            .map_err(io)?;
+        tty.push(SeccompRule::new(vec![cond]).map_err(io)?);
+    }
+    rules.insert(libc::SYS_ioctl, tty);
 
     let arch = if cfg!(target_arch = "aarch64") {
         seccompiler::TargetArch::aarch64
@@ -308,6 +327,7 @@ mod tests {
             .map(|s| s.to_string_lossy().into())
             .collect();
         assert!(a.contains(&"--unshare-net".to_string()));
+        assert!(!a.contains(&"--new-session".to_string()));
         let hooks = ws.join(".git/hooks").display().to_string();
         assert!(a.windows(3).any(|w| w[0] == "--ro-bind" && w[1] == hooks));
         assert!(a.windows(2).any(|w| w[0] == "--tmpfs"));
