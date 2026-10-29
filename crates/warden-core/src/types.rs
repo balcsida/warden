@@ -277,6 +277,12 @@ pub struct Defaults {
     pub protect_git_internals: bool,
     #[serde(default)]
     pub sandbox_allow_degraded: bool,
+    /// Honour `WARDEN_DEV_IDENTITY` (a JSON identity, no IdP). For CI and conformance tests only.
+    #[serde(default)]
+    pub allow_dev_identity: bool,
+    /// Parent env vars passed through on top of the built-in allowlist (e.g. SSH_AUTH_SOCK).
+    #[serde(default)]
+    pub passthrough_env: Vec<String>,
     /// How long past `not_after` the bundle is still accepted.
     #[serde(default = "default_grace_secs", with = "secs")]
     pub not_after_grace: Duration,

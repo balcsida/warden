@@ -83,12 +83,21 @@ impl Provider for StaticProvider {
         if !req.formats.contains(&self.format) {
             return Err(ProviderError::NoCommonFormat(self.id.clone()));
         }
-        let key = keychain_entry(&self.id)?.get_password().map_err(|e| {
-            ProviderError::Other(format!(
-                "no key in keychain for provider `{}` ({e}); run `warden provider set-key {}`",
-                self.id, self.id
-            ))
-        })?;
+        // CI and headless hosts: WARDEN_STATIC_KEY_<ID> in warden's own environment
+        // (the child never inherits it). Otherwise the OS keychain.
+        let env_name = format!(
+            "WARDEN_STATIC_KEY_{}",
+            self.id.to_ascii_uppercase().replace('-', "_")
+        );
+        let key = match std::env::var(&env_name) {
+            Ok(k) if !k.is_empty() => k,
+            _ => keychain_entry(&self.id)?.get_password().map_err(|e| {
+                ProviderError::Other(format!(
+                    "no key for provider `{}` ({e}); run `warden provider set-key {}` or set {env_name}",
+                    self.id, self.id
+                ))
+            })?,
+        };
         Ok(Credential {
             base_url: self.base_url.clone(),
             format: self.format,

@@ -436,6 +436,10 @@ impl Evaluator {
                 eff.denied_hosts.push((host.clone(), *port))
             }
         }
+        // the proxy allowlist is a union: a host allowed anywhere is reachable
+        eff.denied_hosts.retain(|d| !eff.hosts.contains(d));
+        eff.hosts.sort();
+        eff.hosts.dedup();
         eff
     }
 

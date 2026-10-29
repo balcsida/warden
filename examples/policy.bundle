@@ -1,0 +1,46 @@
+{
+  "meta": { "version": "2026.10.29-1", "issuer": "example-org platform team", "issued_at": 1793232000, "not_after": 1825000000 },
+  "identity": { "issuer": "https://idp.example.com", "client_id": "warden-cli", "groups_claim": "groups" },
+  "providers": [
+    { "kind": "litellm", "id": "gw", "base_url": "https://gw.example.com" }
+  ],
+  "defaults": { "credential_ttl": 28800, "max_budget_usd": 25.0, "not_after_grace": 604800 },
+  "catalog": {
+    "harnesses": ["claude-code", "codex", "opencode", "pi"],
+    "harness_sets": { "approved": ["claude-code", "codex", "opencode", "pi"] },
+    "models": {
+      "claude-sonnet-5": { "provider": "gw", "tier": "standard" },
+      "claude-opus-5-5": { "provider": "gw", "tier": "frontier" },
+      "gpt-6-luna": { "provider": "gw", "tier": "standard" }
+    },
+    "default_model": "claude-sonnet-5",
+    "paths": {
+      "workspace": { "path": "${workspace}", "access": "rw" },
+      "ssh": { "path": "${HOME}/.ssh", "access": "deny" },
+      "cloud-creds": { "path": "${HOME}/.aws", "access": "deny" }
+    },
+    "hosts": {
+      "github": { "host": "github.com", "purpose": "git" },
+      "github-api": { "host": "api.github.com", "purpose": "git" },
+      "npm": { "host": "registry.npmjs.org", "purpose": "packages" },
+      "pypi": { "host": "pypi.org", "purpose": "packages" },
+      "pypi-files": { "host": "files.pythonhosted.org", "purpose": "packages" },
+      "crates": { "host": "crates.io", "purpose": "packages" },
+      "crates-static": { "host": "static.crates.io", "purpose": "packages" },
+      "crates-index": { "host": "index.crates.io", "purpose": "packages" }
+    },
+    "host_sets": {
+      "registries": ["npm", "pypi", "pypi-files", "crates", "crates-static", "crates-index"],
+      "git": ["github", "github-api"]
+    }
+  },
+  "policies": [
+    "// Everyone in engineering may launch any approved harness.\npermit(principal in Warden::Group::\"engineering\", action == Warden::Action::\"launch\", resource in Warden::HarnessSet::\"approved\");",
+    "// Codex is in pilot.\nforbid(principal, action == Warden::Action::\"launch\", resource == Warden::Harness::\"codex\") unless { principal in Warden::Group::\"codex-pilot\" };",
+    "// Models: standard tier for all, frontier for leads.\npermit(principal, action == Warden::Action::\"useModel\", resource) when { resource.tier == \"standard\" };\npermit(principal in Warden::Group::\"ml-leads\", action == Warden::Action::\"useModel\", resource) when { resource.tier == \"frontier\" };",
+    "permit(principal, action == Warden::Action::\"useProvider\", resource);",
+    "permit(principal, action == Warden::Action::\"writePath\", resource == Warden::Path::\"workspace\");",
+    "// Network: registries and git for engineering, nothing else; no update checks or telemetry from any harness.\npermit(principal in Warden::Group::\"engineering\", action == Warden::Action::\"connect\", resource in Warden::HostSet::\"registries\");\npermit(principal in Warden::Group::\"engineering\", action == Warden::Action::\"connect\", resource in Warden::HostSet::\"git\") unless { principal in Warden::Group::\"contractors\" };\nforbid(principal, action == Warden::Action::\"connect\", resource) when { resource.purpose == \"telemetry\" || resource.purpose == \"update-check\" };",
+    "// Escape hatch, audited.\npermit(principal in Warden::Group::\"platform-admins\", action == Warden::Action::\"launchUnsandboxed\", resource);"
+  ]
+}

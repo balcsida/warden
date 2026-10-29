@@ -1,0 +1,60 @@
+name: conformance
+
+# Installs the latest release of every supported harness, launches it under
+# `warden run` against a mock gateway, and checks the harness really used the
+# injected base URL and key. Runs nightly so upstream config changes surface early.
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+  push:
+    paths:
+      - "adapters/**"
+      - "crates/warden-cli/tests/conformance.rs"
+      - ".github/workflows/conformance.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  conformance:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+        harness: [claude-code, codex, opencode, pi]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Linux sandbox prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: Install harness (latest release)
+        run: |
+          case "${{ matrix.harness }}" in
+            claude-code) npm install -g @anthropic-ai/claude-code ;;
+            codex)       npm install -g @openai/codex ;;
+            opencode)    npm install -g opencode-ai ;;
+            pi)          npm install -g @earendil-works/pi-coding-agent ;;
+          esac
+      - name: Build warden
+        run: cargo build -p warden-cli
+      - name: Install pi-provider-litellm into the warden-owned Pi home
+        if: matrix.harness == 'pi'
+        run: |
+          export WARDEN_DATA="$RUNNER_TEMP/warden-data"
+          mkdir -p "$WARDEN_DATA/homes/pi"
+          PI_CODING_AGENT_DIR="$WARDEN_DATA/homes/pi" pi install npm:pi-provider-litellm
+          echo "WARDEN_DATA=$WARDEN_DATA" >> "$GITHUB_ENV"
+      - name: Run conformance
+        env:
+          WARDEN_CONFORMANCE: ${{ matrix.harness }}
+        run: cargo test -p warden-cli --test conformance -- --nocapture
