@@ -21,9 +21,9 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets
 
-  # Unit tests plus the sandbox integration test (read/write/connect blocked) on
-  # every supported OS. Windows only builds and runs unit tests; `warden run`
-  # refuses there until milestone 2.
+  # Unit tests plus the sandbox integration tests on every supported OS: macOS and
+  # Linux check read/write/connect blocking, Windows (tests/sandbox_windows.rs)
+  # checks the write limit, ACL idempotence, exit codes and process-tree kill.
   test:
     strategy:
       fail-fast: false
@@ -48,6 +48,10 @@ jobs:
           # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor; the
           # sandbox needs them. This mirrors what a managed fleet would configure.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      # the lint job runs on Linux and never compiles cfg(windows) code
+      - name: Clippy (Windows code)
+        if: runner.os == 'Windows'
+        run: cargo clippy --workspace --all-targets
       - run: cargo test --workspace
       - name: Linux sandbox smoke (bwrap present, unshare works)
         if: runner.os == 'Linux'
