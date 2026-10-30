@@ -13,15 +13,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: C client variants
-        run: bash .github/spike/macos-proxy2.sh 200
+      - name: C client alternation
+        run: bash .github/spike/macos-proxy3.sh 60
       - name: real warden test loop
-        run: bash .github/spike/macos-warden-loop.sh 120
+        run: bash .github/spike/macos-warden-loop.sh 150
       - name: summary
         if: always()
         run: |
-          cat spike-out/summary2.txt spike-out/warden-summary.txt || true
-          echo ---- failures; head -60 spike-out/failures2.log; head -150 spike-out/warden-failures.log || true
+          cat spike-out/summary3.txt spike-out/warden-summary.txt || true
+          echo ---- failures; head -80 spike-out/failures3.log; head -150 spike-out/warden-failures.log || true
           echo ---- sandbox log; grep -i 'deny\|network' spike-out/sandbox-stream.log | head -60 || true
       - uses: actions/upload-artifact@v4
         if: always()
