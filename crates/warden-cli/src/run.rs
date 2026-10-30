@@ -642,7 +642,7 @@ fn launch(
 
     // 10. supervise
     #[cfg(unix)]
-    install_signal_forwarding(child.pid);
+    install_signal_forwarding(child.pid, child.signal_fd);
     let status = sandbox.wait(&mut child).map_err(|e| Fail::new(1, e))?;
 
     // 11. exit
@@ -748,18 +748,28 @@ fn print_plan(
 }
 
 #[cfg(unix)]
-fn install_signal_forwarding(pid: u32) {
+fn install_signal_forwarding(pid: u32, signal_fd: Option<i32>) {
     use std::sync::atomic::{AtomicI32, Ordering};
     static CHILD: AtomicI32 = AtomicI32::new(0);
+    static SIGNAL_FD: AtomicI32 = AtomicI32::new(-1);
     CHILD.store(pid as i32, Ordering::SeqCst);
+    SIGNAL_FD.store(signal_fd.unwrap_or(-1), Ordering::SeqCst);
     extern "C" fn forward(sig: libc::c_int) {
+        let fd = SIGNAL_FD.load(Ordering::SeqCst);
+        if fd >= 0 {
+            // Linux: bwrap would die on the signal, so the in-sandbox helper relays it.
+            let byte = sig as u8;
+            // SAFETY: async-signal-safe write of one byte from a live local.
+            unsafe { libc::write(fd, (&raw const byte).cast(), 1) };
+            return;
+        }
         let pid = CHILD.load(Ordering::SeqCst);
         if pid > 0 {
             // SAFETY: async-signal-safe syscall with a pid we own.
             unsafe { libc::kill(pid, sig) };
         }
     }
-    // SAFETY: installing plain handlers; `forward` only calls kill(2).
+    // SAFETY: installing plain handlers; `forward` only calls write(2) or kill(2).
     unsafe {
         libc::signal(libc::SIGTERM, forward as *const () as libc::sighandler_t);
         libc::signal(libc::SIGHUP, forward as *const () as libc::sighandler_t);

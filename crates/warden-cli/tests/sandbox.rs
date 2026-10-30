@@ -24,14 +24,16 @@ fn fixture(root: &Path, allowed_port: u16) -> (std::path::PathBuf, std::path::Pa
     let mut bundle: serde_json::Value =
         serde_json::from_str(include_str!("../../../examples/policy.bundle")).unwrap();
     bundle["defaults"]["allow_dev_identity"] = serde_json::json!(true);
-    bundle["catalog"]["harnesses"]
-        .as_array_mut()
-        .unwrap()
-        .push("probe".into());
-    bundle["catalog"]["harness_sets"]["approved"]
-        .as_array_mut()
-        .unwrap()
-        .push("probe".into());
+    for id in ["probe", "shell"] {
+        bundle["catalog"]["harnesses"]
+            .as_array_mut()
+            .unwrap()
+            .push(id.into());
+        bundle["catalog"]["harness_sets"]["approved"]
+            .as_array_mut()
+            .unwrap()
+            .push(id.into());
+    }
     bundle["catalog"]["hosts"]["local"] =
         serde_json::json!({ "host": "127.0.0.1", "port": allowed_port, "purpose": "test" });
     bundle["catalog"]["host_sets"]["registries"]
@@ -61,6 +63,23 @@ model_args = ["__probe"]
 "#,
             exe = env!("CARGO_BIN_EXE_warden")
         ),
+    )
+    .unwrap();
+    // A plain shell, so a test can script a harness: `warden run shell -- '<script>'`.
+    std::fs::write(
+        config.join("adapters/shell.toml"),
+        r#"
+[harness]
+id = "shell"
+name = "shell"
+executable = "sh"
+[detect]
+candidates = ['/bin/sh']
+[inject.openai-chat]
+base_url_env = "OPENAI_BASE_URL"
+key_env = "OPENAI_API_KEY"
+model_args = ["-c"]
+"#,
     )
     .unwrap();
     (config, data)
@@ -183,6 +202,49 @@ fn sandbox_blocks_read_write_and_connect() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(ws.join("written.txt").exists());
+}
+
+#[test]
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), ignore)]
+fn sigterm_reaches_harness_handler() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let root = tempfile::tempdir().unwrap();
+    let (config, data) = fixture(root.path(), 1);
+    let ws = root.path().join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    let mut warden = Command::new(env!("CARGO_BIN_EXE_warden"))
+        .current_dir(&ws)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", root.path())
+        .env("WARDEN_CONFIG", &config)
+        .env("WARDEN_TRUSTED_KEYS", config.join("trusted-keys"))
+        .env("WARDEN_DATA", &data)
+        .env("WARDEN_AUDIT", "none")
+        .env("WARDEN_STATIC_KEY_GW", "sk-test")
+        .env(
+            "WARDEN_DEV_IDENTITY",
+            r#"{"subject":"tester","groups":["engineering"]}"#,
+        )
+        .args(["run", "shell", "--"])
+        .arg(r#"trap "echo GOT_TERM; exit 5" TERM; echo started; sleep 30 & wait"#)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = BufReader::new(warden.stdout.take().unwrap());
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    assert_eq!(line.trim(), "started");
+    // SAFETY: kill(2) on the child we spawned.
+    unsafe { libc::kill(warden.id() as libc::pid_t, libc::SIGTERM) };
+    // the orphaned `sleep` keeps the pipe open, so read the one line instead of to EOF
+    line.clear();
+    stdout.read_line(&mut line).unwrap();
+    assert_eq!(line.trim(), "GOT_TERM");
+    assert_eq!(warden.wait().unwrap().code(), Some(5));
 }
 
 #[test]

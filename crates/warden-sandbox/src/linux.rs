@@ -37,7 +37,12 @@ fn user_namespaces_available() -> bool {
 }
 
 /// bwrap argv (without the bwrap binary itself), ending in `-- <self> __linux-sandbox ... -- argv`.
-pub fn bwrap_args(spec: &SandboxSpec, self_exe: &Path, argv: &[OsString]) -> Vec<OsString> {
+pub fn bwrap_args(
+    spec: &SandboxSpec,
+    self_exe: &Path,
+    signal_fd: i32,
+    argv: &[OsString],
+) -> Vec<OsString> {
     let mut a: Vec<OsString> = vec![
         "--die-with-parent".into(),
         "--unshare-user".into(),
@@ -70,7 +75,12 @@ pub fn bwrap_args(spec: &SandboxSpec, self_exe: &Path, argv: &[OsString]) -> Vec
             a.extend(["--ro-bind".into(), "/dev/null".into(), d.clone().into()]);
         }
     }
-    let mut helper: Vec<OsString> = vec![self_exe.into(), HELPER_SUBCOMMAND.into()];
+    let mut helper: Vec<OsString> = vec![
+        self_exe.into(),
+        HELPER_SUBCOMMAND.into(),
+        "--signal-fd".into(),
+        signal_fd.to_string().into(),
+    ];
     if let ProxyHandle::Unix { path, port } = &spec.network.proxy {
         a.extend(["--bind".into(), path.clone().into(), path.clone().into()]);
         helper.extend([
@@ -125,27 +135,63 @@ impl Sandbox for LinuxSandbox {
             libc::signal(libc::SIGINT, libc::SIG_IGN);
             libc::signal(libc::SIGQUIT, libc::SIG_IGN);
         }
-        crate::unix::spawn(&bwrap.into(), &bwrap_args(spec, &self_exe, argv), spec)
+        // bwrap kills its child without forwarding signals, so warden writes signal
+        // numbers to this pipe and the helper delivers them to the harness. The read
+        // end is inherited through bwrap (no CLOEXEC); the write end stays ours.
+        let mut fds = [0; 2];
+        // SAFETY: pipe(2) fills the two-element array; fcntl on the fd we just made.
+        let rc = unsafe {
+            let rc = libc::pipe(fds.as_mut_ptr());
+            if rc == 0 {
+                libc::fcntl(fds[1], libc::F_SETFD, libc::FD_CLOEXEC);
+            }
+            rc
+        };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let spawned = crate::unix::spawn(
+            &bwrap.into(),
+            &bwrap_args(spec, &self_exe, fds[0], argv),
+            spec,
+        );
+        // SAFETY: closing our copy of the read end; the child has its own.
+        unsafe { libc::close(fds[0]) };
+        let mut child = spawned.inspect_err(|_| unsafe {
+            libc::close(fds[1]);
+        })?;
+        child.signal_fd = Some(fds[1]);
+        Ok(child)
     }
     fn wait(&self, child: &mut LaunchedChild) -> Result<ExitStatus, SandboxError> {
         crate::unix::wait(child)
     }
     fn signal(&self, child: &LaunchedChild, sig: Signal) -> Result<(), SandboxError> {
-        crate::unix::signal(child, sig)
+        let Some(fd) = child.signal_fd else {
+            return crate::unix::signal(child, sig);
+        };
+        let byte = crate::unix::signum(sig) as u8;
+        // SAFETY: write(2) of one byte from a live local.
+        if unsafe { libc::write(fd, (&raw const byte).cast(), 1) } != 1 {
+            return Err(SandboxError::Spawn(std::io::Error::last_os_error()));
+        }
+        Ok(())
     }
 }
 
 // ------------------------------------------------------------------ helper (runs inside bwrap)
 
-/// `warden __linux-sandbox [--proxy-uds P --proxy-port N] -- argv...`
+/// `warden __linux-sandbox [--signal-fd N] [--proxy-uds P --proxy-port N] -- argv...`
 pub fn run_helper(args: &[OsString]) -> ! {
     let mut proxy_uds: Option<PathBuf> = None;
     let mut proxy_port: u16 = 0;
+    let mut signal_fd: Option<i32> = None;
     let mut it = args.iter();
     let mut argv: Vec<OsString> = Vec::new();
     while let Some(a) = it.next() {
         match a.to_str() {
             Some("--proxy-uds") => proxy_uds = it.next().map(PathBuf::from),
+            Some("--signal-fd") => signal_fd = it.next().and_then(|p| p.to_str()?.parse().ok()),
             Some("--proxy-port") => {
                 proxy_port = it
                     .next()
@@ -171,6 +217,11 @@ pub fn run_helper(args: &[OsString]) -> ! {
         });
         wait_for_port(proxy_port);
     }
+    if let Some(fd) = signal_fd {
+        // Keep it out of the harness, which would otherwise steal the bytes.
+        // SAFETY: fcntl on the fd bwrap passed us.
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    }
     if let Err(e) = harden() {
         die(&format!("sandbox hardening failed: {e}"));
     }
@@ -191,10 +242,33 @@ pub fn run_helper(args: &[OsString]) -> ! {
             Ok(())
         });
     }
-    match cmd.status() {
-        Ok(status) => std::process::exit(crate::unix::exit_code(status)),
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
         Err(e) => die(&format!("exec {:?}: {e}", argv[0])),
+    };
+    if let Some(fd) = signal_fd {
+        relay_signals(fd, child.id() as libc::pid_t);
     }
+    match child.wait() {
+        Ok(status) => std::process::exit(crate::unix::exit_code(status)),
+        Err(e) => die(&format!("wait {:?}: {e}", argv[0])),
+    }
+}
+
+/// Deliver each signal number warden writes to `fd` to the harness. EOF means
+/// warden is gone and --die-with-parent is already tearing us down.
+fn relay_signals(fd: i32, harness: libc::pid_t) {
+    use std::io::Read;
+    use std::os::fd::FromRawFd;
+    // SAFETY: fd is the pipe end bwrap passed us; we own it from here on.
+    let mut pipe = unsafe { std::fs::File::from_raw_fd(fd) };
+    std::thread::spawn(move || {
+        let mut b = [0u8; 1];
+        while pipe.read_exact(&mut b).is_ok() {
+            // SAFETY: kill(2) on our own child.
+            unsafe { libc::kill(harness, b[0] as libc::c_int) };
+        }
+    });
 }
 
 fn die(msg: &str) -> ! {
@@ -324,7 +398,7 @@ mod tests {
             env: BTreeMap::new(),
             cwd: ws.clone(),
         };
-        let a: Vec<String> = bwrap_args(&spec, Path::new("/opt/warden"), &["pi".into()])
+        let a: Vec<String> = bwrap_args(&spec, Path::new("/opt/warden"), 7, &["pi".into()])
             .iter()
             .map(|s| s.to_string_lossy().into())
             .collect();
@@ -333,11 +407,13 @@ mod tests {
         let hooks = ws.join(".git/hooks").display().to_string();
         assert!(a.windows(3).any(|w| w[0] == "--ro-bind" && w[1] == hooks));
         assert!(a.windows(2).any(|w| w[0] == "--tmpfs"));
-        let tail: Vec<_> = a.iter().rev().take(7).rev().cloned().collect();
+        let tail: Vec<_> = a.iter().rev().take(9).rev().cloned().collect();
         assert_eq!(
             tail,
             [
                 "__linux-sandbox",
+                "--signal-fd",
+                "7",
                 "--proxy-uds",
                 "/tmp/p.sock",
                 "--proxy-port",

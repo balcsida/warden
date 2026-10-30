@@ -29,12 +29,16 @@ pub fn wait(child: &mut LaunchedChild) -> Result<ExitStatus, SandboxError> {
     Ok(c.wait()?)
 }
 
-pub fn signal(child: &LaunchedChild, sig: Signal) -> Result<(), SandboxError> {
-    let signum = match sig {
+pub fn signum(sig: Signal) -> libc::c_int {
+    match sig {
         Signal::Interrupt => libc::SIGINT,
         Signal::Terminate => libc::SIGTERM,
         Signal::Hangup => libc::SIGHUP,
-    };
+    }
+}
+
+pub fn signal(child: &LaunchedChild, sig: Signal) -> Result<(), SandboxError> {
+    let signum = signum(sig);
     // SAFETY: kill(2) with a pid we spawned; no memory is touched.
     let rc = unsafe { libc::kill(child.pid as libc::pid_t, signum) };
     if rc != 0 {

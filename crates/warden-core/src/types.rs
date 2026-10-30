@@ -214,6 +214,8 @@ pub enum SandboxError {
 
 pub struct LaunchedChild {
     pub pid: u32,
+    /// Write end of a pipe that relays signals to the harness when `pid` is not it (Linux).
+    pub signal_fd: Option<i32>,
     pub(crate) inner: Box<dyn std::any::Any + Send>,
 }
 
@@ -221,6 +223,7 @@ impl LaunchedChild {
     pub fn new<T: std::any::Any + Send>(pid: u32, inner: T) -> Self {
         Self {
             pid,
+            signal_fd: None,
             inner: Box::new(inner),
         }
     }
