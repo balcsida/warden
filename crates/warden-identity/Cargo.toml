@@ -20,4 +20,6 @@ secrecy.workspace = true
 url.workspace = true
 tokio.workspace = true
 openidconnect = "4"
+# same reqwest as openidconnect::reqwest; enables .json() on its responses
+reqwest.workspace = true
 keyring = { version = "3", features = ["apple-native", "windows-native", "async-secret-service", "tokio", "crypto-rust"] }

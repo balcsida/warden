@@ -223,7 +223,7 @@ fn rt() -> tokio::runtime::Runtime {
 
 impl IdentityProvider for OidcDeviceFlow {
     fn login(&self, cfg: &IdentityConfig) -> Result<Identity, IdentityError> {
-        rt().block_on(async {
+        let (identity, stored) = rt().block_on(async {
             let http = http_client()?;
             let c = client(cfg, &http).await?;
             let mut req = c.exchange_device_code();
@@ -246,10 +246,11 @@ impl IdentityProvider for OidcDeviceFlow {
                 .request_async(&http, tokio::time::sleep, Some(details.expires_in()))
                 .await
                 .map_err(perr)?;
-            let (identity, stored) = identity_from(cfg, &c, &resp)?;
-            save(cfg, &stored)?;
-            Ok(identity)
-        })
+            identity_from(cfg, &c, &resp)
+        })?;
+        // Outside the runtime: the secret-service backend blocks on its own executor.
+        save(cfg, &stored)?;
+        Ok(identity)
     }
 
     fn current(&self, cfg: &IdentityConfig) -> Result<Identity, IdentityError> {
@@ -259,7 +260,7 @@ impl IdentityProvider for OidcDeviceFlow {
             Err(e) => return Err(IdentityError::Keychain(e.to_string())),
         };
         let stored: Stored = serde_json::from_str(&raw).map_err(|_| IdentityError::NotLoggedIn)?;
-        rt().block_on(async {
+        let (identity, refreshed) = rt().block_on(async {
             let http = http_client()?;
             let c = client(cfg, &http).await?;
             // Still valid for 5 minutes: verify the cached token locally and reuse it.
@@ -273,13 +274,14 @@ impl IdentityProvider for OidcDeviceFlow {
                 if let Ok(claims) =
                     id_token.claims(&c.id_token_verifier(), |_: Option<&Nonce>| Ok(()))
                 {
-                    return Ok(Identity {
+                    let identity = Identity {
                         subject: claims.subject().to_string(),
                         email: claims.email().map(|e| e.to_string()),
                         groups: groups_from(&claims.additional_claims().0, &cfg.groups_claim),
                         id_token: SecretString::from(stored.id_token.clone()),
                         expires_at: UNIX_EPOCH + Duration::from_secs(stored.expires_at),
-                    });
+                    };
+                    return Ok((identity, None));
                 }
             }
             let Some(refresh) = stored.refresh_token.as_deref() else {
@@ -295,9 +297,12 @@ impl IdentityProvider for OidcDeviceFlow {
             if new_stored.refresh_token.is_none() {
                 new_stored.refresh_token = Some(refresh.to_string());
             }
-            save(cfg, &new_stored)?;
-            Ok(identity)
-        })
+            Ok((identity, Some(new_stored)))
+        })?;
+        if let Some(stored) = refreshed {
+            save(cfg, &stored)?;
+        }
+        Ok(identity)
     }
 
     fn logout(&self, cfg: &IdentityConfig) -> Result<(), IdentityError> {

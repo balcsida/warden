@@ -102,7 +102,7 @@ pub trait IdentityProvider {
 pub struct IdentityConfig {
     pub issuer: Url,                  // discovery at {issuer}/.well-known/openid-configuration
     pub client_id: String,
-    pub scopes: Vec<String>,          // default ["openid", "profile", "email", "groups"]
+    pub scopes: Vec<String>,          // default ["openid", "profile", "email", "groups", "offline_access"]
     pub groups_claim: String,         // default "groups"; Entra uses "groups", Okta "groups", Keycloak "groups" or "realm_access.roles" (dotted path supported)
 }
 ```

@@ -65,8 +65,10 @@ pub struct IdentityConfig {
     pub groups_claim: String,
 }
 
+/// `offline_access` is what makes Dex, Okta and Entra return the refresh token
+/// that `current()` needs once the ID token expires.
 fn default_scopes() -> Vec<String> {
-    ["openid", "profile", "email", "groups"]
+    ["openid", "profile", "email", "groups", "offline_access"]
         .map(String::from)
         .to_vec()
 }
@@ -348,4 +350,17 @@ pub fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_scopes_default_to_refreshable() {
+        let cfg: IdentityConfig =
+            serde_json::from_str(r#"{"issuer":"https://idp.example.com","client_id":"c"}"#)
+                .unwrap();
+        assert!(cfg.scopes.contains(&"offline_access".to_string()));
+    }
 }
