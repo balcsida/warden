@@ -73,7 +73,13 @@ pub fn base_from_parent(
         .filter(|(k, _)| {
             PASSTHROUGH.contains(&k.as_str())
                 || PASSTHROUGH_PREFIX.iter().any(|p| k.starts_with(p))
-                || optional.contains(&k.as_str())
+                || optional.iter().any(|o| {
+                    if cfg!(windows) {
+                        o.eq_ignore_ascii_case(k)
+                    } else {
+                        o == k
+                    }
+                })
         })
         .collect()
 }
@@ -134,7 +140,7 @@ mod tests {
             ("ssh_auth_sock", "s"),
         ]
         .map(|(k, v)| (k.to_string(), v.to_string()));
-        let env = base_from_parent(parent.into_iter(), &["SSH_AUTH_SOCK"]);
+        let env = base_from_parent(parent.into_iter(), &["ssh_auth_sock"]);
         assert_eq!(
             env.keys().collect::<Vec<_>>(),
             ["PATH", "SSH_AUTH_SOCK", "SYSTEMROOT"]
