@@ -160,7 +160,8 @@ Implementations:
   `{"duration": "<ttl>", "models": [...], "max_budget": <from policy>, "user_id": <identity.subject>, "key_alias": "warden/<sub>/<harness>/<timestamp>", "metadata": {"harness": ..., "warden_version": ...}}`.
   Authentication to the management API is the user's OIDC ID token (LiteLLM JWT
   auth, `general_settings.enable_jwt_auth`); warden never holds a LiteLLM master key.
-  See open question Q3. `revoke` calls `/key/delete`.
+  See open question Q3. `revoke` calls `/key/delete`, or mint-serve's `/v1/revoke` when
+  a `mint_url` is set (§9).
 
 ### 2.3 Sandbox
 
@@ -762,7 +763,7 @@ are structured (`serde` structs), mapped to OTel log records with
 background task; when full, events are dropped and a counter is reported in the
 next successful export. Never blocks launch. Event names:
 `identity.login`, `policy.loaded`, `policy.rejected`, `policy.decision`,
-`credential.issued`, `credential.revoked`, `harness.launch`, `harness.exit`,
+`credential.issued`, `credential.revoked` (or `credential.revoke_failed`), `harness.launch`, `harness.exit`,
 `sandbox.network_denied`, `sandbox.preflight_failed`.
 
 Note: the OTLP endpoint itself must be reachable from warden (outside the sandbox).
@@ -906,8 +907,9 @@ Deviations from the design above, all deliberate:
   master key may delete. Holding the key proves ownership, and works after the ID
   token has expired; keys without `metadata.issued_by = warden` are refused.
   `tests/it_litellm.rs` runs the whole path against a real proxy (opt-in, `tests/it/litellm/`).
-  Known gap: the sandbox proxy forwards plain-HTTP requests in absolute form, which
-  uvicorn (LiteLLM) 404s; https gateways (CONNECT) are unaffected.
+- **Egress proxy, plain HTTP**: forwarded in origin-form with `Connection: close`
+  (one request per proxied connection). Absolute-form, as first written, was 404'd by
+  uvicorn (LiteLLM); CONNECT tunnels are unaffected.
 
 - **Q10 Name.** `warden` is taken on crates.io by an unrelated crate. Binary name can
   stay `warden`; the crate names can be `warden-*` only if those are free (they
