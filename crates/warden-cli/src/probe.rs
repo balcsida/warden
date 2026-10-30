@@ -18,24 +18,24 @@ pub fn run(read: &std::path::Path, write: &std::path::Path, connect: &str) -> Ex
     )
     .is_ok();
     let _ = writeln!(out, "direct={}", if direct { "ok" } else { "denied" });
-    let via_proxy = std::env::var("HTTPS_PROXY").ok().and_then(|p| {
+    // Err names the failing step so a flaky CI run says why (e.g. `connect: ConnectionRefused`).
+    let via_proxy = (|| -> Result<bool, String> {
+        let p = std::env::var("HTTPS_PROXY").map_err(|_| "no HTTPS_PROXY".to_string())?;
         let addr = p.trim_start_matches("http://").to_string();
-        let mut s = std::net::TcpStream::connect(addr).ok()?;
+        let step = |what: &str, e: std::io::Error| format!("{what}: {:?}", e.kind());
+        let mut s = std::net::TcpStream::connect(addr).map_err(|e| step("connect", e))?;
         s.set_read_timeout(Some(std::time::Duration::from_secs(3)))
-            .ok()?;
-        write!(s, "CONNECT {connect} HTTP/1.1\r\nHost: {connect}\r\n\r\n").ok()?;
+            .map_err(|e| step("timeout", e))?;
+        write!(s, "CONNECT {connect} HTTP/1.1\r\nHost: {connect}\r\n\r\n")
+            .map_err(|e| step("write", e))?;
         let mut buf = [0u8; 64];
-        let n = std::io::Read::read(&mut s, &mut buf).ok()?;
-        Some(String::from_utf8_lossy(&buf[..n]).contains(" 200 "))
-    });
-    let _ = writeln!(
-        out,
-        "proxy={}",
-        match via_proxy {
-            Some(true) => "ok",
-            Some(false) => "denied",
-            None => "unavailable",
-        }
-    );
+        let n = std::io::Read::read(&mut s, &mut buf).map_err(|e| step("read", e))?;
+        Ok(String::from_utf8_lossy(&buf[..n]).contains(" 200 "))
+    })();
+    let _ = match via_proxy {
+        Ok(true) => writeln!(out, "proxy=ok"),
+        Ok(false) => writeln!(out, "proxy=denied"),
+        Err(why) => writeln!(out, "proxy=unavailable ({why})"),
+    };
     ExitCode::SUCCESS
 }
