@@ -87,6 +87,23 @@ musl) and Windows (x86_64), built with cargo-dist. From source: `cargo install
 Linux needs `bubblewrap` and unprivileged user namespaces. macOS uses the
 system `sandbox-exec`.
 
+## Try it in Docker
+
+A self-contained demo: OSS LiteLLM in front of [VidaiMock](https://github.com/vidaiUK/VidaiMock)
+(a fake OpenAI/Anthropic upstream, so no provider keys), `warden mint-serve`, and a
+shell with warden and Pi behind a signed demo bundle and a dev identity. Needs only Docker.
+
+```
+docker compose -f examples/demo/compose.yaml run --rm warden
+# inside the container:
+warden doctor
+warden policy show
+warden run probe                  # one curl through the sandbox proxy with a minted key
+warden run pi -- -p "say hi"      # answered by the mock upstream
+```
+
+`docker compose -f examples/demo/compose.yaml down -v` removes it.
+
 ## Set up an organisation
 
 1. `warden policy keygen` → keep the private key in your secrets store; put the

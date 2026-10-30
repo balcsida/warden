@@ -1,0 +1,13 @@
+# Smallest possible harness: one curl through warden's proxy with the minted key.
+[harness]
+id = "probe"
+name = "probe"
+executable = "sh"
+
+[detect]
+candidates = ["/bin/sh"]
+
+[inject.litellm]
+base_url_env = "LITELLM_BASE_URL"
+key_env = "LITELLM_API_KEY"
+model_args = ["-c", '''curl -sS "$LITELLM_BASE_URL/v1/chat/completions" -H "Authorization: Bearer $LITELLM_API_KEY" -H "Content-Type: application/json" -d '{"model":"${model}","messages":[{"role":"user","content":"hi"}]}'; echo''']

@@ -1,0 +1,32 @@
+---
+# Real LiteLLM in front of VidaiMock (a fake OpenAI/Anthropic upstream), the same
+# arrangement pi-provider-litellm's smoke test uses. No upstream keys needed.
+model_list:
+  - model_name: claude-sonnet-5
+    model_info:
+      mode: chat
+      litellm_provider: anthropic
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_base: http://vidaimock:8100
+      api_key: sk-vidaimock
+  - model_name: claude-opus-5-5
+    model_info:
+      mode: chat
+      litellm_provider: anthropic
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_base: http://vidaimock:8100
+      api_key: sk-vidaimock
+  - model_name: gpt-6-luna
+    model_info:
+      mode: chat
+      supported_endpoints: ["/v1/chat/completions"]
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_base: http://vidaimock:8100/v1
+      api_key: sk-vidaimock
+
+general_settings:
+  master_key: sk-demo-master-0000
+  database_url: postgresql://litellm:litellm@db:5432/litellm
