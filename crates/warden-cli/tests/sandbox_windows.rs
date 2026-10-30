@@ -358,13 +358,13 @@ fn launch_leaves_no_temp_dir_behind() {
 #[test]
 fn refuses_a_workspace_containing_a_config_dir_that_does_not_exist_yet() {
     let e = Env::new(true);
-    // `claude` resolves through PATH to a stand-in, since the adapters live in the missing config dir
+    // `codex` resolves through PATH to a stand-in, since the adapters live in the missing config dir
     let bin = e.ws.join("..").join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    std::fs::copy(env!("CARGO_BIN_EXE_warden"), bin.join("claude.exe")).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_warden"), bin.join("codex.exe")).unwrap();
     let missing = e.ws.join("newcfg").join("warden");
     let out = e
-        .command("claude-code", &[])
+        .command("codex", &[])
         .env("WARDEN_CONFIG", &missing)
         .env("WARDEN_POLICY", e.config.join("policy.bundle"))
         .env("PATH", &bin)
