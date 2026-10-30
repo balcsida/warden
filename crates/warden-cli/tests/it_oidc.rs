@@ -4,7 +4,7 @@
 //!
 //! Opt in with `WARDEN_IT_OIDC_ISSUER=<dex issuer url>`; the stored tokens go to the
 //! OS keyring, so run it where a keyring is unlocked. Without it the tests are
-//! skipped so `cargo test` stays hermetic.
+//! skipped so `cargo test` stays hermetic, unless `WARDEN_IT_REQUIRED` is set (CI).
 
 use std::io::{BufRead, BufReader, Read};
 use std::net::TcpListener;
@@ -21,6 +21,10 @@ const MASTER: &str = "sk-master-0000";
 fn issuer() -> Option<String> {
     let issuer = std::env::var("WARDEN_IT_OIDC_ISSUER").ok();
     if issuer.is_none() {
+        assert!(
+            std::env::var_os("WARDEN_IT_REQUIRED").is_none(),
+            "WARDEN_IT_REQUIRED is set but WARDEN_IT_OIDC_ISSUER is not"
+        );
         eprintln!("WARDEN_IT_OIDC_ISSUER not set; skipping");
     }
     issuer
@@ -281,12 +285,13 @@ fn mint_serve_verifies_real_id_token() {
             .spawn()
             .unwrap(),
     );
-    for _ in 0..100 {
-        if std::net::TcpStream::connect(("127.0.0.1", mint_port)).is_ok() {
-            break;
+    let up = (0..100).any(|_| {
+        std::net::TcpStream::connect(("127.0.0.1", mint_port)).is_ok() || {
+            std::thread::sleep(Duration::from_millis(50));
+            false
         }
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    });
+    assert!(up, "mint-serve did not start listening on port {mint_port}");
     let mint = |token: &str| {
         reqwest::blocking::Client::new()
             .post(format!("http://127.0.0.1:{mint_port}/v1/mint"))

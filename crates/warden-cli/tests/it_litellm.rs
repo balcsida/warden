@@ -2,7 +2,8 @@
 //! mints a key, a sandboxed harness completes through it, and the key is dead after exit.
 //!
 //! Opt in with `WARDEN_IT_LITELLM_URL` and `WARDEN_IT_LITELLM_MASTER_KEY`. Without
-//! them the test is skipped so `cargo test` stays hermetic.
+//! them the test is skipped so `cargo test` stays hermetic, unless `WARDEN_IT_REQUIRED`
+//! is set (CI): then a missing variable is a failure.
 
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
@@ -98,12 +99,13 @@ fn start_mint(f: &Fixture, litellm_url: &str, master: &str, port: u16) -> Server
         .stderr(Stdio::inherit())
         .spawn()
         .unwrap();
-    for _ in 0..100 {
-        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            break;
+    let up = (0..100).any(|_| {
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() || {
+            std::thread::sleep(Duration::from_millis(50));
+            false
         }
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    });
+    assert!(up, "mint-serve did not start listening on port {port}");
     Server(child)
 }
 
@@ -123,6 +125,10 @@ fn real_litellm_mint_run_revoke() {
         std::env::var("WARDEN_IT_LITELLM_URL"),
         std::env::var("WARDEN_IT_LITELLM_MASTER_KEY"),
     ) else {
+        assert!(
+            std::env::var_os("WARDEN_IT_REQUIRED").is_none(),
+            "WARDEN_IT_REQUIRED is set but WARDEN_IT_LITELLM_URL / WARDEN_IT_LITELLM_MASTER_KEY are not both set"
+        );
         eprintln!("WARDEN_IT_LITELLM_URL / WARDEN_IT_LITELLM_MASTER_KEY not set; skipping");
         return;
     };

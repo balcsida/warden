@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
@@ -14,6 +17,7 @@ jobs:
   # warden's OTLP audit exporter against a real OpenTelemetry Collector.
   otlp:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -44,6 +48,7 @@ jobs:
           exit 1
       - run: cargo test -p warden-cli --test it_otlp -- --nocapture
         env:
+          WARDEN_IT_REQUIRED: "1"
           WARDEN_IT_OTLP_ENDPOINT: http://127.0.0.1:14318/v1/logs
           WARDEN_IT_OTLP_FILE: ${{ runner.temp }}/otlp-out/logs.json
       - name: Collector logs
@@ -53,7 +58,9 @@ jobs:
   # Real OSS LiteLLM (mock_response models, no upstream keys) behind `warden mint-serve`.
   litellm:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     env:
+      WARDEN_IT_REQUIRED: "1"
       WARDEN_IT_LITELLM_URL: http://127.0.0.1:14000
       WARDEN_IT_LITELLM_MASTER_KEY: sk-it-master-0000
     steps:
@@ -72,7 +79,7 @@ jobs:
       - name: Wait for LiteLLM
         run: |
           for _ in $(seq 60); do
-            curl -sf "$WARDEN_IT_LITELLM_URL/health/liveliness" && exit 0
+            curl -sf "$WARDEN_IT_LITELLM_URL/health/readiness" && exit 0
             sleep 2
           done
           docker logs wit-litellm-proxy
@@ -86,7 +93,9 @@ jobs:
   # `warden mint-serve` against Dex (config in crates/warden-cli/tests/it/oidc).
   oidc:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     env:
+      WARDEN_IT_REQUIRED: "1"
       WARDEN_IT_OIDC_ISSUER: http://127.0.0.1:5556/dex
     steps:
       - uses: actions/checkout@v4
@@ -117,3 +126,6 @@ jobs:
           dbus-run-session -- sh -c '
             echo -n pw | gnome-keyring-daemon --unlock --components=secrets >/dev/null
             cargo test -p warden-cli --test it_oidc -- --test-threads=1'
+      - name: Dex logs
+        if: failure()
+        run: docker logs dex

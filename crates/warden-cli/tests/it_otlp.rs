@@ -4,7 +4,8 @@
 //!
 //! Opt in with `WARDEN_IT_OTLP_ENDPOINT` (e.g. http://127.0.0.1:14318/v1/logs) and
 //! `WARDEN_IT_OTLP_FILE` (the collector's output file as seen by the host).
-//! Without them the test is skipped so `cargo test` stays hermetic.
+//! Without them the test is skipped so `cargo test` stays hermetic, unless
+//! `WARDEN_IT_REQUIRED` is set (CI).
 
 use std::path::Path;
 use std::process::Command;
@@ -136,6 +137,10 @@ fn exports_audit_events_to_collector() {
         std::env::var("WARDEN_IT_OTLP_ENDPOINT"),
         std::env::var("WARDEN_IT_OTLP_FILE"),
     ) else {
+        assert!(
+            std::env::var_os("WARDEN_IT_REQUIRED").is_none(),
+            "WARDEN_IT_REQUIRED is set but WARDEN_IT_OTLP_ENDPOINT / WARDEN_IT_OTLP_FILE are not both set"
+        );
         eprintln!("WARDEN_IT_OTLP_ENDPOINT / WARDEN_IT_OTLP_FILE not set; skipping");
         return;
     };
@@ -197,6 +202,10 @@ fn exports_audit_events_to_collector() {
 #[test]
 fn unreachable_collector_does_not_block_launch() {
     if std::env::var("WARDEN_IT_OTLP_ENDPOINT").is_err() {
+        assert!(
+            std::env::var_os("WARDEN_IT_REQUIRED").is_none(),
+            "WARDEN_IT_REQUIRED is set but WARDEN_IT_OTLP_ENDPOINT is not"
+        );
         eprintln!("WARDEN_IT_OTLP_ENDPOINT not set; skipping");
         return;
     }
