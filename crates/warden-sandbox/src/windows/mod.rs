@@ -73,8 +73,10 @@ impl Sandbox for WindowsSandbox {
             acl::grant_write(&c.root, c.sid.as_ptr())?;
         }
         // keep .git/hooks and .git/config read-only (as on macOS and Linux): a planted
-        // hook would run outside the sandbox on the developer's next commit. Every
-        // capability is denied because a parent root's grant is inherited into them.
+        // hook would run outside the sandbox on the developer's next commit. Deny the
+        // capability of every root containing them, since a parent root's grant is
+        // inherited into them; other roots (the per-launch temp dir) stay untouched so
+        // repeated launches add no ACEs.
         let mut protected: Vec<_> = caps
             .iter()
             .flat_map(|c| {
@@ -88,7 +90,7 @@ impl Sandbox for WindowsSandbox {
         protected.sort();
         protected.dedup();
         for p in &protected {
-            for c in &caps {
+            for c in caps.iter().filter(|c| p.starts_with(&c.root)) {
                 acl::deny_write(p, c.sid.as_ptr())?;
             }
         }
