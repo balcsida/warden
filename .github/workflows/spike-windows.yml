@@ -1,0 +1,197 @@
+name: spike-windows
+on:
+  push:
+    branches: ['spike/**']
+  workflow_dispatch:
+
+jobs:
+  phase-b:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - name: 1. Create group and user
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $chars = (48..57) + (65..90) + (97..122) | ForEach-Object { [char]$_ }
+          $pw = -join (1..20 | ForEach-Object { $chars | Get-Random }) + 'aA1!'
+          Write-Host "::add-mask::$pw"
+          "SBX_PW=$pw" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+          New-LocalGroup -Name WardenSandboxUsers -Description 'warden spike' | Out-Null
+          New-LocalUser -Name WardenSandbox -Password (ConvertTo-SecureString $pw -AsPlainText -Force) -PasswordNeverExpires -AccountNeverExpires | Out-Null
+          Add-LocalGroupMember -Group WardenSandboxUsers -Member WardenSandbox
+          $u = Get-LocalUser WardenSandbox; $g = Get-LocalGroup WardenSandboxUsers
+          "SBX_USER_SID=$($u.SID.Value)" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+          "SBX_GROUP_SID=$($g.SID.Value)" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+          Write-Host "CHECK|1 user created|PASS|user SID $($u.SID.Value)"
+          Write-Host "CHECK|1 group created|PASS|group SID $($g.SID.Value)"
+          Write-Host "group members: $((Get-LocalGroupMember WardenSandboxUsers).Name -join ',')"
+          Write-Host "runner: $(whoami /user /fo csv /nh)"
+          Write-Host "runner is admin: $(([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrators'))"
+
+      - name: 2. Listeners and fixtures
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory C:\spike, C:\spike\out, C:\spike\granted, C:\spike\notgranted | Out-Null
+          # C:\ children inherit Authenticated Users:Modify; cut inheritance so "not granted" is real.
+          icacls C:\spike /inheritance:r /grant 'BUILTIN\Administrators:(OI)(CI)F' "$($env:USERNAME):(OI)(CI)F" "*$($env:SBX_GROUP_SID):(RX)" | Out-Null
+          icacls C:\spike\out /grant "*$($env:SBX_GROUP_SID):(OI)(CI)M" | Out-Null
+          icacls C:\spike\granted /grant "*$($env:SBX_GROUP_SID):(OI)(CI)M" | Out-Null
+          icacls C:\spike\notgranted | Write-Host
+          icacls C:\spike\granted | Write-Host
+          New-Item -ItemType Directory "$env:USERPROFILE\.ssh" -Force | Out-Null
+          'PRIVATE-KEY-PLACEHOLDER' | Out-File "$env:USERPROFILE\.ssh\id_test"
+          @'
+          param($Port, $Line)
+          $l = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port); $l.Start()
+          while ($true) { $c = $l.AcceptTcpClient(); $w = [IO.StreamWriter]::new($c.GetStream()); $w.WriteLine($Line); $w.Flush(); $c.Close() }
+          '@ | Out-File -Encoding ascii C:\spike\listener.ps1
+          foreach ($p in 18080, 18081) {
+            Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-File','C:\spike\listener.ps1',$p,"HELLO-FROM-$p"
+          }
+          Start-Sleep 3
+          Get-NetTCPConnection -State Listen | Where-Object LocalPort -in 18080,18081 | Format-Table LocalAddress,LocalPort,OwningProcess | Out-String | Write-Host
+
+      - name: 2b. Write child scripts
+        run: |
+          @'
+          param($Out)
+          function Rec($name, $res, $detail) { "CHECK|$name|$res|$detail" | Out-File -Append -Encoding ascii $Out }
+          function Tcp($name, $h, $p) {
+            $t = [Diagnostics.Stopwatch]::StartNew()
+            try {
+              $c = [Net.Sockets.TcpClient]::new()
+              $ar = $c.BeginConnect($h, $p, $null, $null)
+              if (-not $ar.AsyncWaitHandle.WaitOne(6000)) { Rec $name 'BLOCKED' "timeout after 6s (silent drop)"; return }
+              $c.EndConnect($ar)
+              $line = ''
+              if ($p -ge 18080 -and $p -le 18081) { $c.ReceiveTimeout = 3000; $line = [IO.StreamReader]::new($c.GetStream()).ReadLine() }
+              Rec $name 'CONNECTED' "$($t.ElapsedMilliseconds)ms line='$line'"
+            } catch { Rec $name 'BLOCKED' "$($t.ElapsedMilliseconds)ms $($_.Exception.InnerException.Message)$($_.Exception.Message)" }
+          }
+          Rec 'identity' 'INFO' ((whoami /user /fo csv /nh) -join ' ')
+          Tcp 'tcp 1.1.1.1:443' '1.1.1.1' 443
+          Tcp 'tcp example.com:443' 'example.com' 443
+          try { $a = [Net.Dns]::GetHostAddresses('example.com') -join ','; Rec 'dns Dns.GetHostAddresses example.com' 'RESOLVED' $a } catch { Rec 'dns Dns.GetHostAddresses example.com' 'FAILED' $_.Exception.Message }
+          $ns = (nslookup example.com 1.1.1.1 2>&1 | Out-String) -replace "\s+", ' '
+          Rec 'dns nslookup direct to 1.1.1.1 (udp/53)' 'INFO' $ns
+          Tcp 'tcp 127.0.0.1:18080 (P)' '127.0.0.1' 18080
+          Tcp 'tcp 127.0.0.1:18081 (Q)' '127.0.0.1' 18081
+          '@ | Out-File -Encoding ascii C:\spike\net-checks.ps1
+          @'
+          param($Out, $SshFile)
+          . C:\spike\net-checks.ps1 -Out $Out
+          function Rec($name, $res, $detail) { "CHECK|$name|$res|$detail" | Out-File -Append -Encoding ascii $Out }
+          try { $x = Get-Content $SshFile -ErrorAction Stop; Rec 'read runner .ssh file' 'READ' $x } catch { Rec 'read runner .ssh file' 'DENIED' $_.Exception.Message }
+          try { Get-ChildItem (Split-Path $SshFile) -ErrorAction Stop | Out-Null; Rec 'list runner .ssh dir' 'LISTED' '' } catch { Rec 'list runner .ssh dir' 'DENIED' $_.Exception.Message }
+          try { 'x' | Out-File C:\spike\granted\w.txt -ErrorAction Stop; Rec 'write granted dir' 'WROTE' '' } catch { Rec 'write granted dir' 'DENIED' $_.Exception.Message }
+          try { 'x' | Out-File C:\spike\notgranted\w.txt -ErrorAction Stop; Rec 'write not-granted dir' 'WROTE' '' } catch { Rec 'write not-granted dir' 'DENIED' $_.Exception.Message }
+          try { 'x' | Out-File C:\Windows\w.txt -ErrorAction Stop; Rec 'write C:\Windows' 'WROTE' '' } catch { Rec 'write C:\Windows' 'DENIED' $_.Exception.Message }
+          Rec 'groups' 'INFO' ((whoami /groups /fo csv /nh) -join ' ; ')
+          Rec 'env' 'INFO' "USERPROFILE=$env:USERPROFILE APPDATA=$env:APPDATA TEMP=$env:TEMP"
+          '@ | Out-File -Encoding ascii C:\spike\sandbox-checks.ps1
+          # Runs the checks but only prints; used for the runner-user comparison and for stdio tests.
+          @'
+          param($Out)
+          "stdout-line from child pid $PID user $env:USERNAME" 
+          $in = [Console]::In.ReadLine()
+          "stdin-read: '$in'"
+          try { "console-handle: " + [Console]::WindowWidth } catch { "console-handle: none ($($_.Exception.Message))" }
+          '@ | Out-File -Encoding ascii C:\spike\stdio.ps1
+          @'
+          param($Out)
+          $r = @()
+          $r += "USERPROFILE=$env:USERPROFILE APPDATA=$env:APPDATA"
+          $r += "node: " + ((& cmd /c "node -v 2>&1") -join ' ')
+          $r += "npm: " + ((& cmd /c "npm -v 2>&1") -join ' ')
+          $r += "profile dir exists: $(Test-Path $env:USERPROFILE)"
+          $r | Out-File -Encoding ascii $Out
+          '@ | Out-File -Encoding ascii C:\spike\node.ps1
+          icacls C:\spike\net-checks.ps1 | Write-Host
+
+      - name: 3a. Baseline as sandbox user, before firewall rules (also secondary logon)
+        run: |
+          $svc = Get-Service seclogon
+          Write-Host "seclogon before: Status=$($svc.Status) StartType=$($svc.StartType)"
+          $cred = [pscredential]::new('.\WardenSandbox', (ConvertTo-SecureString $env:SBX_PW -AsPlainText -Force))
+          $p = Start-Process powershell -Credential $cred -WorkingDirectory C:\spike\out -PassThru -ArgumentList '-NoProfile','-File','C:\spike\net-checks.ps1','-Out','C:\spike\out\baseline.txt' -RedirectStandardOutput C:\spike\out\baseline.stdout -RedirectStandardError C:\spike\out\baseline.stderr
+          if (-not $p.WaitForExit(120000)) { Write-Host 'TIMEOUT'; $p.Kill() }
+          Write-Host "exit=$($p.ExitCode)"
+          Write-Host "seclogon after: Status=$((Get-Service seclogon).Status)"
+          Get-Content C:\spike\out\baseline.stderr, C:\spike\out\baseline.stdout -ErrorAction SilentlyContinue | Write-Host
+          Get-Content C:\spike\out\baseline.txt -ErrorAction SilentlyContinue | ForEach-Object { "BASELINE $_" } | Write-Host
+
+      - name: 3. Firewall rules
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $sid = $env:SBX_USER_SID
+          $sddl = "O:LSD:(A;;CC;;;$sid)"
+          $P = 18080
+          $nonLoop = '0.0.0.0-126.255.255.255','128.0.0.0-255.255.255.255','::','::2-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff'
+          $loop = '127.0.0.0/8','::/127'
+          Write-Host "mpssvc: $((Get-Service mpssvc | Select-Object Status,StartType | Out-String).Trim())"
+          Write-Host "BEFORE profiles:"; Get-NetFirewallProfile | Format-Table Name,Enabled,DefaultInboundAction,DefaultOutboundAction,AllowLocalFirewallRules | Out-String | Write-Host
+          $fw = New-Object -ComObject HNetCfg.FwPolicy2
+          foreach ($t in 1,2,4) { Write-Host "LocalPolicyModifyState profile $t = $($fw.LocalPolicyModifyState) ; FirewallEnabled=$($fw.FirewallEnabled($t))" }
+          function Add($name, $splat) {
+            try { New-NetFirewallRule -DisplayName $name -Group WardenSpike -Profile Any -Enabled True -LocalUser $sddl @splat -ErrorAction Stop | Out-Null; Write-Host "CHECK|rule $name|CREATED|" }
+            catch { Write-Host "CHECK|rule $name|ERROR|$($_.Exception.Message)" }
+          }
+          # fail-closed order, as codex: broad loopback TCP block first (narrowed afterwards by replacing it)
+          Add 'warden_block_outbound_nonloopback' @{ Direction='Outbound'; Action='Block'; Protocol='Any'; RemoteAddress=$nonLoop }
+          Add 'warden_block_inbound_nonloopback'  @{ Direction='Inbound';  Action='Block'; Protocol='Any'; RemoteAddress=$nonLoop }
+          Add 'warden_block_loopback_udp'         @{ Direction='Outbound'; Action='Block'; Protocol='UDP'; RemoteAddress=$loop }
+          Add 'warden_block_loopback_tcp'         @{ Direction='Outbound'; Action='Block'; Protocol='TCP'; RemoteAddress=$loop; RemotePort = @("1-$($P-1)", "$($P+1)-65535") }
+          Write-Host "AFTER profiles:"; Get-NetFirewallProfile | Format-Table Name,Enabled,DefaultInboundAction,DefaultOutboundAction | Out-String | Write-Host
+          Write-Host "Rules (ActiveStore, effective):"
+          foreach ($r in Get-NetFirewallRule -Group WardenSpike -PolicyStore ActiveStore) {
+            $sf = $r | Get-NetFirewallSecurityFilter; $af = $r | Get-NetFirewallAddressFilter; $pf = $r | Get-NetFirewallPortFilter
+            Write-Host ("{0} | enabled={1} dir={2} action={3} status={4} | localuser={5} | remote={6} | proto={7} rport={8}" -f $r.DisplayName,$r.Enabled,$r.Direction,$r.Action,$r.EnforcementStatus,$sf.LocalUser,($af.RemoteAddress -join ','),$pf.Protocol,($pf.RemotePort -join ','))
+          }
+          Write-Host "(netsh) "; netsh advfirewall firewall show rule name=warden_block_loopback_tcp verbose | Write-Host
+
+      - name: 4. Checks as sandbox user (after rules)
+        run: |
+          $cred = [pscredential]::new('.\WardenSandbox', (ConvertTo-SecureString $env:SBX_PW -AsPlainText -Force))
+          $p = Start-Process powershell -Credential $cred -WorkingDirectory C:\spike\out -PassThru -ArgumentList '-NoProfile','-File','C:\spike\sandbox-checks.ps1','-Out','C:\spike\out\sandbox.txt','-SshFile',"$env:USERPROFILE\.ssh\id_test" -RedirectStandardOutput C:\spike\out\sandbox.stdout -RedirectStandardError C:\spike\out\sandbox.stderr
+          if (-not $p.WaitForExit(180000)) { Write-Host 'TIMEOUT'; $p.Kill() }
+          Write-Host "exit=$($p.ExitCode)"
+          Get-Content C:\spike\out\sandbox.stderr, C:\spike\out\sandbox.stdout -ErrorAction SilentlyContinue | Write-Host
+          Get-Content C:\spike\out\sandbox.txt | ForEach-Object { "SANDBOX $_" } | Write-Host
+
+      - name: 5. Same network checks as runner user
+        run: |
+          powershell -NoProfile -File C:\spike\net-checks.ps1 -Out C:\spike\out\runner.txt
+          Get-Content C:\spike\out\runner.txt | ForEach-Object { "RUNNER $_" } | Write-Host
+
+      - name: 6. Bonus - stdio and profile
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $cred = [pscredential]::new('.\WardenSandbox', (ConvertTo-SecureString $env:SBX_PW -AsPlainText -Force))
+          'typed-by-parent' | Out-File -Encoding ascii C:\spike\out\stdin.txt
+          Write-Host "--- 6a: redirect stdin/stdout/stderr to files"
+          try {
+            $p = Start-Process powershell -Credential $cred -WorkingDirectory C:\spike\out -PassThru -ArgumentList '-NoProfile','-File','C:\spike\stdio.ps1' -RedirectStandardInput C:\spike\out\stdin.txt -RedirectStandardOutput C:\spike\out\io.out -RedirectStandardError C:\spike\out\io.err
+            $null = $p.WaitForExit(60000); Write-Host "exit=$($p.ExitCode)"
+            Write-Host "STDOUT:"; Get-Content C:\spike\out\io.out | Write-Host; Write-Host "STDERR:"; Get-Content C:\spike\out\io.err | Write-Host
+          } catch { Write-Host "CHECK|6a redirect|ERROR|$($_.Exception.Message)" }
+          Write-Host "--- 6b: -NoNewWindow with -Credential (inherit parent console handles)"
+          try {
+            $p = Start-Process powershell -Credential $cred -NoNewWindow -Wait -PassThru -WorkingDirectory C:\spike\out -ArgumentList '-NoProfile','-File','C:\spike\stdio.ps1' -ErrorAction Stop
+            Write-Host "CHECK|6b NoNewWindow+Credential|RAN|exit=$($p.ExitCode)"
+          } catch { Write-Host "CHECK|6b NoNewWindow+Credential|ERROR|$($_.Exception.Message)" }
+          Write-Host "--- 6b2: -Credential without redirection (own window / handles)"
+          try {
+            $p = Start-Process powershell -Credential $cred -Wait -PassThru -WorkingDirectory C:\spike\out -ArgumentList '-NoProfile','-File','C:\spike\stdio.ps1' -ErrorAction Stop
+            Write-Host "CHECK|6b2 Credential no redirect|RAN|exit=$($p.ExitCode) (output went to a new console, not ours)"
+          } catch { Write-Host "CHECK|6b2 Credential no redirect|ERROR|$($_.Exception.Message)" }
+          Write-Host "--- 6c: node/npm without -LoadUserProfile"
+          $p = Start-Process powershell -Credential $cred -WorkingDirectory C:\spike\out -PassThru -ArgumentList '-NoProfile','-File','C:\spike\node.ps1','-Out','C:\spike\out\node-noprofile.txt' -RedirectStandardOutput C:\spike\out\n1.out -RedirectStandardError C:\spike\out\n1.err
+          $null = $p.WaitForExit(120000); Get-Content C:\spike\out\node-noprofile.txt, C:\spike\out\n1.err -ErrorAction SilentlyContinue | Write-Host
+          Write-Host "--- 6c: node/npm with -LoadUserProfile"
+          try {
+            $p = Start-Process powershell -Credential $cred -LoadUserProfile -WorkingDirectory C:\spike\out -PassThru -ArgumentList '-NoProfile','-File','C:\spike\node.ps1','-Out','C:\spike\out\node-profile.txt' -RedirectStandardOutput C:\spike\out\n2.out -RedirectStandardError C:\spike\out\n2.err -ErrorAction Stop
+            $null = $p.WaitForExit(120000); Get-Content C:\spike\out\node-profile.txt, C:\spike\out\n2.err -ErrorAction SilentlyContinue | Write-Host
+          } catch { Write-Host "CHECK|6c LoadUserProfile|ERROR|$($_.Exception.Message)" }
+          Write-Host "profile dirs: $((Get-ChildItem C:\Users -Name) -join ', ')"
