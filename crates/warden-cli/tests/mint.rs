@@ -10,6 +10,14 @@ use std::time::Duration;
 
 const MASTER: &str = "sk-master-0000";
 
+/// Loopback requests must not go to a proxy from the developer's environment.
+fn local_client() -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -195,7 +203,7 @@ fn mint_serve_issues_scoped_keys() {
     );
 
     // outsider: mint server refuses even if a tampered client asked
-    let resp = reqwest::blocking::Client::new()
+    let resp = local_client()
         .post(format!("http://127.0.0.1:{mint_port}/v1/mint"))
         .bearer_auth(r#"dev:{"subject":"mallory","groups":["sales"]}"#)
         .json(&serde_json::json!({"harness": "probe", "models": ["claude-opus-5-5"], "ttl_secs": 999999}))
@@ -203,7 +211,7 @@ fn mint_serve_issues_scoped_keys() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 403);
     // garbage token
-    let resp = reqwest::blocking::Client::new()
+    let resp = local_client()
         .post(format!("http://127.0.0.1:{mint_port}/v1/mint"))
         .bearer_auth("not-a-jwt")
         .json(
