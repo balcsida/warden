@@ -81,3 +81,39 @@ jobs:
       - name: LiteLLM logs
         if: failure()
         run: docker logs wit-litellm-proxy
+
+  # Real IdP: `warden login`, token refresh, `warden run` and
+  # `warden mint-serve` against Dex (config in crates/warden-cli/tests/it/oidc).
+  oidc:
+    runs-on: ubuntu-24.04
+    env:
+      WARDEN_IT_OIDC_ISSUER: http://127.0.0.1:5556/dex
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install bubblewrap and keyring
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap gnome-keyring dbus-user-session
+          # Same as ci.yml: Ubuntu 24.04 restricts unprivileged user namespaces.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: Start Dex
+        run: |
+          sed "s|ISSUER_URL|$WARDEN_IT_OIDC_ISSUER|" \
+            crates/warden-cli/tests/it/oidc/dex.yaml > "$RUNNER_TEMP/dex.yaml"
+          docker run -d --name dex --network host \
+            -v "$RUNNER_TEMP/dex.yaml:/etc/dex/config.yaml:ro" \
+            ghcr.io/dexidp/dex:v2.45.1 dex serve /etc/dex/config.yaml
+          discovery=$WARDEN_IT_OIDC_ISSUER/.well-known/openid-configuration
+          for _ in $(seq 60); do
+            curl -fs "$discovery" >/dev/null && exit 0
+            sleep 1
+          done
+          docker logs dex
+          exit 1
+      - name: Test against Dex
+        run: |
+          dbus-run-session -- sh -c '
+            echo -n pw | gnome-keyring-daemon --unlock --components=secrets >/dev/null
+            cargo test -p warden-cli --test it_oidc -- --test-threads=1'

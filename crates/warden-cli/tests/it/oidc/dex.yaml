@@ -1,0 +1,30 @@
+---
+# Dex for tests/it_oidc.rs, pinned to v2.45.1: v2.46.x hangs on the second
+# refresh. Replace ISSUER_URL with the issuer the test client uses, e.g.
+# http://127.0.0.1:5556/dex (see .github/workflows/integration.yml).
+issuer: ISSUER_URL
+storage:
+  type: memory
+web:
+  http: 0.0.0.0:5556
+# ID tokens shorter than warden's 5 minute reuse window make every
+# `current()` refresh.
+expiry:
+  idTokens: 2m
+oauth2:
+  skipApprovalScreen: true
+enablePasswordDB: false
+connectors:
+  # Logs in as a fixed user with groups ["authors"] without any form to fill in.
+  - type: mockCallback
+    id: mock
+    name: Mock
+staticClients:
+  - id: warden-it
+    name: warden-it
+    public: true
+    redirectURIs: ["/device/callback"]
+  - id: warden-other
+    name: warden-other
+    public: true
+    redirectURIs: ["/device/callback"]
