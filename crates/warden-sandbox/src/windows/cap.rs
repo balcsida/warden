@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -176,7 +176,9 @@ pub fn for_roots(data_dir: &Path, roots: &[PathBuf]) -> io::Result<Vec<Cap>> {
     }
     if changed {
         let tmp = file.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(&caps).map_err(io::Error::other)?)?;
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(&serde_json::to_vec(&caps).map_err(io::Error::other)?)?;
+        f.sync_all()?; // a power loss must not leave a renamed but unflushed file
         std::fs::rename(&tmp, &file)?;
     }
     Ok(out)
