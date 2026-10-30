@@ -195,3 +195,67 @@ jobs:
             $null = $p.WaitForExit(120000); Get-Content C:\spike\out\node-profile.txt, C:\spike\out\n2.err -ErrorAction SilentlyContinue | Write-Host
           } catch { Write-Host "CHECK|6c LoadUserProfile|ERROR|$($_.Exception.Message)" }
           Write-Host "profile dirs: $((Get-ChildItem C:\Users -Name) -join ', ')"
+
+      - name: 7. Diagnostic - loopback Q blocked by a plain per-port firewall rule?
+        run: |
+          $sddl = "O:LSD:(A;;CC;;;$($env:SBX_USER_SID))"
+          New-NetFirewallRule -DisplayName diag_block_q_any_addr -Group WardenSpike -Direction Outbound -Action Block -Protocol TCP -RemotePort 18081 -LocalUser $sddl -Profile Any | Out-Null
+          New-NetFirewallRule -DisplayName diag_block_q_loopback_only -Group WardenSpike -Direction Outbound -Action Block -Protocol TCP -RemotePort 18081 -RemoteAddress 127.0.0.1 -LocalUser $sddl -Profile Any | Out-Null
+          $cred = [pscredential]::new('.\WardenSandbox', (ConvertTo-SecureString $env:SBX_PW -AsPlainText -Force))
+          $p = Start-Process powershell -Credential $cred -WorkingDirectory C:\spike\out -PassThru -ArgumentList '-NoProfile','-File','C:\spike\net-checks.ps1','-Out','C:\spike\out\diag1.txt' -RedirectStandardOutput C:\spike\out\d1.out -RedirectStandardError C:\spike\out\d1.err
+          $null = $p.WaitForExit(120000)
+          Get-Content C:\spike\out\diag1.txt | Where-Object { $_ -match '127.0.0.1' } | ForEach-Object { "DIAG1 $_" } | Write-Host
+          # control: the same rule for ALL users must block the runner's own loopback connect if the firewall filters loopback at all
+          New-NetFirewallRule -DisplayName diag_control_all_users_q -Group WardenSpike -Direction Outbound -Action Block -Protocol TCP -RemotePort 18081 -Profile Any | Out-Null
+          powershell -NoProfile -File C:\spike\net-checks.ps1 -Out C:\spike\out\diag-control.txt
+          Get-Content C:\spike\out\diag-control.txt | Where-Object { $_ -match '127.0.0.1' } | ForEach-Object { "DIAGCONTROL(runner, rule for all users) $_" } | Write-Host
+          Remove-NetFirewallRule -DisplayName diag_control_all_users_q
+
+      - name: 8. Diagnostic - WFP filter (user + loopback + port != P) at ALE_AUTH_CONNECT_V4
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Add-Type -TypeDefinition @'
+          using System; using System.Runtime.InteropServices; using System.Security.AccessControl;
+          public static class Wfp {
+            [StructLayout(LayoutKind.Sequential)] public struct Cond { public Guid Field; public uint Match; public uint Pad; public uint VType; public IntPtr Val; }
+            [StructLayout(LayoutKind.Sequential)] struct Filter {
+              public Guid Key; public IntPtr Name; public IntPtr Desc; public uint Flags; public IntPtr ProviderKey; public uint PDSize; public IntPtr PDData;
+              public Guid Layer; public Guid Sub; public uint WType; public IntPtr WVal; public uint NumConds; public IntPtr Conds;
+              public uint ActType; public Guid ActKey; public ulong Raw; public ulong Raw2; public IntPtr Reserved; public ulong FilterId; public uint EWType; public IntPtr EWVal; }
+            [DllImport("fwpuclnt.dll")] static extern uint FwpmEngineOpen0(string s, uint authn, IntPtr a, IntPtr sess, out IntPtr h);
+            [DllImport("fwpuclnt.dll")] static extern uint FwpmFilterAdd0(IntPtr h, ref Filter f, IntPtr sd, out ulong id);
+            [DllImport("fwpuclnt.dll")] static extern uint FwpmEngineClose0(IntPtr h);
+            static readonly Guid UserId = new Guid("af043a0a-b34d-4f86-979c-c90371af6e66");
+            static readonly Guid RemAddr = new Guid("b235ae9a-1d64-49b8-a44c-5ff3d9095045");
+            static readonly Guid RemPort = new Guid("c35a604d-d22b-4e1a-91b4-68f674ee674b");
+            static readonly Guid Proto = new Guid("3971ef2b-623e-4f9a-8cb1-6e79b806b9a7");
+            public static string AddBlock(string sddl, ushort allowedPort) {
+              IntPtr h; uint r = FwpmEngineOpen0(null, 10, IntPtr.Zero, IntPtr.Zero, out h);
+              if (r != 0) return "FwpmEngineOpen0 error 0x" + r.ToString("x");
+              var sd = new RawSecurityDescriptor(sddl).GetBinaryForm();
+              IntPtr sdBuf = Marshal.AllocHGlobal(sd.Length); Marshal.Copy(sd, 0, sdBuf, sd.Length);
+              IntPtr blob = Marshal.AllocHGlobal(16); Marshal.WriteInt32(blob, 0, sd.Length); Marshal.WriteInt64(blob, 8, sdBuf.ToInt64());
+              IntPtr am = Marshal.AllocHGlobal(8); Marshal.WriteInt32(am, 0, unchecked((int)0x7F000000)); Marshal.WriteInt32(am, 4, unchecked((int)0xFF000000));
+              var conds = new Cond[] {
+                new Cond { Field = UserId, Match = 0, VType = 14, Val = blob },
+                new Cond { Field = Proto, Match = 0, VType = 1, Val = (IntPtr)6 },
+                new Cond { Field = RemAddr, Match = 0, VType = 0x100, Val = am },
+                new Cond { Field = RemPort, Match = 10, VType = 2, Val = (IntPtr)allowedPort } };
+              int cs = Marshal.SizeOf(typeof(Cond)); IntPtr cb = Marshal.AllocHGlobal(cs * conds.Length);
+              for (int i = 0; i < conds.Length; i++) Marshal.StructureToPtr(conds[i], cb + i * cs, false);
+              var f = new Filter { Key = Guid.NewGuid(), Name = Marshal.StringToHGlobalUni("warden_spike_block_loopback_except_P"), Desc = Marshal.StringToHGlobalUni("spike"),
+                Layer = new Guid("c38d57d1-05a7-4c33-904f-7fbceee60e82"), Sub = new Guid("eebecc03-ced4-4380-819a-2734397b2b74"),
+                NumConds = (uint)conds.Length, Conds = cb, ActType = 0x1001 };
+              ulong id; r = FwpmFilterAdd0(h, ref f, IntPtr.Zero, out id); FwpmEngineClose0(h);
+              return r == 0 ? "filter added id=" + id + " (struct size " + Marshal.SizeOf(typeof(Filter)) + ", cond size " + cs + ")" : "FwpmFilterAdd0 error 0x" + r.ToString("x");
+            }
+          }
+          '@
+          $sddl = "O:LSD:(A;;CC;;;$($env:SBX_USER_SID))"
+          Write-Host ("WFP add: " + [Wfp]::AddBlock($sddl, 18080))
+          $cred = [pscredential]::new('.\WardenSandbox', (ConvertTo-SecureString $env:SBX_PW -AsPlainText -Force))
+          $p = Start-Process powershell -Credential $cred -WorkingDirectory C:\spike\out -PassThru -ArgumentList '-NoProfile','-File','C:\spike\net-checks.ps1','-Out','C:\spike\out\diag2.txt' -RedirectStandardOutput C:\spike\out\d2.out -RedirectStandardError C:\spike\out\d2.err
+          $null = $p.WaitForExit(120000)
+          Get-Content C:\spike\out\diag2.txt | Where-Object { $_ -match '127.0.0.1' } | ForEach-Object { "DIAG2(wfp) $_" } | Write-Host
+          powershell -NoProfile -File C:\spike\net-checks.ps1 -Out C:\spike\out\diag2-runner.txt
+          Get-Content C:\spike\out\diag2-runner.txt | Where-Object { $_ -match '127.0.0.1' } | ForEach-Object { "DIAG2(wfp, runner) $_" } | Write-Host
