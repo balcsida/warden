@@ -46,11 +46,17 @@ impl Drop for LocalAlloc {
     }
 }
 
-/// Whether `dacl` has an ACE of `ace_type` for `sid` covering all of `mask`.
+/// Whether `dacl` has an ACE of `ace_type` for `sid` with exactly `mask` and `inherit` flags.
 ///
 /// # Safety
 /// `dacl` is null or a valid ACL; `sid` is a valid SID.
-unsafe fn has_ace(dacl: *const ACL, sid: *mut c_void, ace_type: u8, mask: u32) -> bool {
+unsafe fn has_ace(
+    dacl: *const ACL,
+    sid: *mut c_void,
+    ace_type: u8,
+    mask: u32,
+    inherit: u32,
+) -> bool {
     if dacl.is_null() {
         return false;
     }
@@ -71,14 +77,15 @@ unsafe fn has_ace(dacl: *const ACL, sid: *mut c_void, ace_type: u8, mask: u32) -
         if unsafe { GetAce(dacl, i, &mut p) } == 0 {
             return false;
         }
-        if unsafe { (*(p as *const ACE_HEADER)).AceType } != ace_type {
+        let header = unsafe { &*(p as *const ACE_HEADER) };
+        // the INHERITED bit (0x10) only says where the ACE came from
+        if header.AceType != ace_type || u32::from(header.AceFlags & 0x0f) != inherit {
             return false;
         }
         // allowed and denied ACEs share one layout: header, mask, SID
         let ace = p as *const ACCESS_ALLOWED_ACE;
         unsafe {
-            (*ace).Mask & mask == mask
-                && EqualSid((&raw const (*ace).SidStart) as *mut c_void, sid) != 0
+            (*ace).Mask == mask && EqualSid((&raw const (*ace).SidStart) as *mut c_void, sid) != 0
         }
     })
 }
@@ -112,7 +119,7 @@ fn ensure_ace(
             &mut sd,
         ))?;
         let _sd = LocalAlloc(sd);
-        if has_ace(dacl, sid, ace_type, mask) {
+        if has_ace(dacl, sid, ace_type, mask, inherit) {
             return Ok(false);
         }
         let entry = EXPLICIT_ACCESS_W {
@@ -146,6 +153,11 @@ fn ensure_ace(
 /// Let `sid` read, write and delete under `root` (inherited by everything below).
 pub fn grant_write(root: &Path, sid: *mut c_void) -> io::Result<bool> {
     ensure_ace(root, sid, false, WRITE_ALLOW, CONTAINER_AND_OBJECT_INHERIT)
+}
+
+/// Deny `sid` deleting or renaming `dir` itself; not inherited by its children.
+pub fn deny_delete(dir: &Path, sid: *mut c_void) -> io::Result<bool> {
+    ensure_ace(dir, sid, true, DELETE, 0)
 }
 
 /// Deny `sid` writes to `path`; a directory's deny is inherited by its children.

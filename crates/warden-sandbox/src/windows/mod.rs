@@ -54,11 +54,14 @@ impl Sandbox for WindowsSandbox {
                     .into(),
             ));
         }
-        eprintln!(
-            "warden: WARNING degraded Windows sandbox: writes are limited to the writable roots and the process tree is killed on exit, \
-             but network egress and deny-read paths are NOT enforced on Windows yet"
-        );
         Ok(())
+    }
+
+    fn degraded(&self) -> Option<&'static str> {
+        Some(
+            "degraded Windows sandbox: writes are limited to the writable roots and the process tree is killed on exit, \
+             but network egress and deny-read paths are NOT enforced on Windows yet",
+        )
     }
 
     fn spawn(&self, spec: &SandboxSpec, argv: &[OsString]) -> Result<LaunchedChild, SandboxError> {
@@ -92,6 +95,21 @@ impl Sandbox for WindowsSandbox {
         for p in &protected {
             for c in caps.iter().filter(|c| p.starts_with(&c.root)) {
                 acl::deny_write(p, c.sid.as_ptr())?;
+            }
+        }
+        // `.git` itself must not be renamed or replaced either: a renamed copy with a
+        // planted hook moved back would dodge the denies above. The deny is not
+        // inherited, so writes inside `.git` (objects, refs) keep working.
+        let mut git_dirs: Vec<_> = caps
+            .iter()
+            .map(|c| c.root.join(".git"))
+            .filter(|p| p.is_dir())
+            .collect();
+        git_dirs.sort();
+        git_dirs.dedup();
+        for g in &git_dirs {
+            for c in caps.iter().filter(|c| g.starts_with(&c.root)) {
+                acl::deny_delete(g, c.sid.as_ptr())?;
             }
         }
         let sids: Vec<&cap::Sid> = caps.iter().map(|c| &c.sid).collect();
