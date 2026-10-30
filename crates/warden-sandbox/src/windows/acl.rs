@@ -155,11 +155,6 @@ pub fn grant_write(root: &Path, sid: *mut c_void) -> io::Result<bool> {
     ensure_ace(root, sid, false, WRITE_ALLOW, CONTAINER_AND_OBJECT_INHERIT)
 }
 
-/// Deny `sid` deleting or renaming `dir` itself; not inherited by its children.
-pub fn deny_delete(dir: &Path, sid: *mut c_void) -> io::Result<bool> {
-    ensure_ace(dir, sid, true, DELETE, 0)
-}
-
 /// Deny `sid` writes to `path`; a directory's deny is inherited by its children.
 pub fn deny_write(path: &Path, sid: *mut c_void) -> io::Result<bool> {
     let inherit = if path.is_dir() {

@@ -108,7 +108,8 @@ keychain is not a file on macOS but `~/Library/Keychains` is denied anyway).
   own sandbox use. If Apple removes it, the macOS backend must move to an
   `Endpoint Security`-free alternative (likely a helper using the same
   `sandbox_init` API, or Apple's Containerization). Tracked as a platform risk.
-- Windows (phase A): only the write limit holds. A restricted token (`WRITE_RESTRICTED`,
+- Windows (phase A): only a partial write limit holds (creating and modifying
+  files, not deleting or renaming them, see below). A restricted token (`WRITE_RESTRICTED`,
   capability SIDs per writable root) stops writes outside the roots, and `.git\hooks`
   and `.git\config` get deny-write ACEs if they exist at launch. **Deny-read is not
   enforced**: the child runs as the developer and can read `~/.ssh` and the rest.
@@ -117,8 +118,13 @@ keychain is not a file on macOS but `~/Library/Keychains` is denied anyway).
   after the run on purpose, since descendants may outlive warden; the process tree
   itself is killed with warden (job object). Phase B adds deny-read through a
   separate sandbox user.
-  - `.git` itself also gets a non-inherited deny-DELETE ACE, so it cannot be renamed
-    away and copied back with a planted hook; writes inside it still work.
+  - **Deleting and renaming are not limited.** A `WRITE_RESTRICTED` token checks the
+    restricting SIDs only for write-class rights, and DELETE is not one. The child can
+    delete or rename any file the developer can (`del`, `rd /s`, `ren`), inside or
+    outside the roots, and deny ACEs for capability SIDs do not stop it. That includes
+    renaming `.git` away and moving a copy with a planted hook back, which defeats the
+    `.git\hooks` and `.git\config` denies. Verified on windows-2022 (the ignored tests
+    in `sandbox_windows.rs`). Closing it needs phase B or a low-integrity token.
   - **Console injection.** The child shares the user's console and desktop. The job
     object blocks USER handles of other processes, desktop switching, global atoms and
     system-parameter changes, but the child can still write to the console input
@@ -131,9 +137,12 @@ keychain is not a file on macOS but `~/Library/Keychains` is denied anyway).
   - **ACL side effects.** Grants and denies are written into the real ACLs of the
     workspace and persist (see above), and the first grant on a large tree rewrites
     every ACL below the root, which can take a long time. Later launches are fast.
-  - **Same-user processes.** A test asserts that the child cannot open warden or
-    another launch's process with `PROCESS_VM_WRITE`, `PROCESS_CREATE_THREAD` or
-    `PROCESS_DUP_HANDLE`.
+  - **Same-user processes.** The child cannot open warden for `PROCESS_VM_WRITE`,
+    `PROCESS_CREATE_THREAD` or `PROCESS_DUP_HANDLE` (tested). With the logon SID in
+    every default DACL, two concurrent launches could open each other with all three
+    (found on windows-2022); each launch now has a random SID in its restricting list
+    and default DACL instead, and a test covers it. Reading another process is still
+    allowed, as for any same-user process.
   - `.cmd`/`.bat` harnesses (npm shims) run through cmd.exe, which cannot be
     quoted safely, so arguments containing `"`, `%` or a line break are refused.
 - `TMPDIR` and `/tmp` are writable; a tool can stage data there, but C1 keeps it

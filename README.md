@@ -17,7 +17,8 @@ use, mint a short-lived gateway credential for you, start a local allowlisting
 egress proxy, and launch the harness inside an OS sandbox whose only way out is
 that proxy. The harness inherits your terminal, so interactive TUIs work unchanged.
 
-Status: milestone 1 (macOS and Linux). Windows is phase A: the write limit and
+Status: milestone 1 (macOS and Linux). Windows is phase A: a partial write limit (no
+create or modify outside the roots, but deletes and renames are not blocked) and
 process-tree kill are enforced, network egress and deny-read paths are **not**, and
 `warden run` only starts when the bundle sets `defaults.sandbox_allow_degraded`.
 The elevated phase B (sandbox user and firewall rules) is still to come.
@@ -41,7 +42,8 @@ Warden is a client-side control. Be clear-eyed about what that means.
 - Credentials: per-launch, per-user, TTL-bound, scoped to the allowed models.
   Never written to disk by warden. For Claude Code on macOS and Linux the key never
   enters the environment at all; the harness fetches it per request from a socket
-  warden owns (the socket is Unix-only, so on Windows the key is in the environment). (Pi would support the same through pi-provider-litellm, but that
+  warden owns (the socket is Unix-only, so on Windows the key is in the environment).
+  (Pi would support the same through pi-provider-litellm, but that
   extension does not run key helpers at startup yet, so Pi gets the env var.)
 - Identity and policy: groups come from the IdP's signed token; the bundle is
   Ed25519-signed and validated against the Cedar schema; anything unverifiable

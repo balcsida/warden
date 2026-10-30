@@ -248,21 +248,35 @@ Backends in milestone 1:
   policy sets `sandbox.allow_degraded = true`; otherwise refuses.
 - `WindowsSandbox` (phase A, `warden-sandbox/src/windows/`, derived from codex's
   `windows-sandbox-rs`, see `THIRD_PARTY_NOTICES.md`). **Enforced**: writes are limited
-  to the `read_write` roots, and the harness's whole process tree dies with warden.
-  **Not enforced**: network egress and `deny_read` (a restricted token cannot block
-  sockets or reads). So `preflight` refuses unless `SandboxSpec.sandbox_allow_degraded`
-  (`defaults.sandbox_allow_degraded`) is set, and then prints one warning saying so.
+  to the `read_write` roots (creating and modifying files; **deleting and renaming
+  existing files is not limited**, see below), and the harness's whole process tree dies
+  with warden. **Not enforced**: network egress and `deny_read` (a restricted token
+  cannot block sockets or reads). So `preflight` refuses unless
+  `SandboxSpec.sandbox_allow_degraded` (`defaults.sandbox_allow_degraded`) is set, and
+  then `Sandbox::degraded()` supplies the warning `warden run` prints and records as
+  `degraded=true` in the `harness.launch` audit event (`warden doctor` stays quiet).
   How it works: `CreateRestrictedToken(DISABLE_MAX_PRIVILEGE | LUA_TOKEN |
   WRITE_RESTRICTED)` with restricting SIDs = one random capability SID per canonical
-  writable root + the logon SID + Everyone (a write needs an allow ACE for one of
-  them; reads are unaffected). Capability SIDs persist in
+  writable root + the logon SID + Everyone + one random SID per launch (a write needs an
+  allow ACE for one of them; reads are unaffected). The token's default DACL grants the
+  user and that per-launch SID, so a concurrent launch's children cannot open this
+  launch's processes for write (the logon SID is shared by every launch of a session).
+  `cap_sids.json` is written atomically under a lock file, pruned of roots that no longer
+  exist, and a corrupt file is moved to `cap_sids.json.bad`.
+  **DELETE gap**: the kernel runs the restricting-SID pass of a `WRITE_RESTRICTED` token
+  only for write-class rights, and DELETE is not one, so the child can delete or rename
+  any file the user could, outside the roots too (and rename `.git` away); verified on
+  windows-2022 (ignored tests in `sandbox_windows.rs`). Phase B (a separate sandbox
+  user) or a low-integrity token with labelled roots would close it. Capability SIDs persist in
   `<data dir>\cap_sids.json`, so the ACL grants (generic read/write/execute/delete,
   no `WRITE_DAC`, no `FILE_DELETE_CHILD`, inherited) are made once per root and
   repeated launches leave the ACLs unchanged. `.git\hooks` and `.git\config` get a
   deny-write ACE for the capability SIDs of the roots that contain them, if they
   exist at launch (a hooks directory created later is not covered). The child is
   created with `CreateProcessAsUserW` inside a `KILL_ON_JOB_CLOSE` job (job-list
-  attribute, so it never runs outside the job), an explicit environment block, and only
+  attribute, so it never runs outside the job; `UILIMIT_HANDLES`, `DESKTOP`,
+  `DISPLAYSETTINGS`, `EXITWINDOWS`, `GLOBALATOMS`, `SYSTEMPARAMETERS`, not the
+  clipboard), an explicit environment block, and only
   the three std handles inherited, so it owns the console like on Unix. `signal`:
   Terminate/Hangup terminate the job; Interrupt sends Ctrl-C to the console. warden
   itself installs a console control handler (not inherited by the child, unlike
