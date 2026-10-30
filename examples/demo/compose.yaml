@@ -1,0 +1,55 @@
+---
+# Local demo, fully in Docker: OSS LiteLLM in front of VidaiMock (a fake upstream, so
+# no provider keys), `warden mint-serve`, and a shell with warden + Pi. Placeholder credentials only.
+#
+#   docker compose -f examples/demo/compose.yaml run --rm warden
+#   warden doctor; warden policy show; warden run probe; warden run pi -- -p "say hi"
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: litellm
+      POSTGRES_DB: litellm
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm"]
+      interval: 2s
+      retries: 30
+
+  vidaimock:
+    image: ghcr.io/vidaiuk/vidaimock:0.4.0
+
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.106.6
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    depends_on:
+      db:
+        condition: service_healthy
+      vidaimock:
+        condition: service_started
+    volumes: ["./litellm.yaml:/app/config.yaml:ro"]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/readiness')"]
+      interval: 3s
+      retries: 60
+
+  mint:
+    build: { context: ../.., dockerfile: examples/demo/Dockerfile }
+    command: ["warden", "mint-serve", "--listen", "0.0.0.0:8787", "--litellm-url", "http://litellm:4000", "--allow-dev-identity"]
+    environment:
+      LITELLM_MASTER_KEY: sk-demo-master-0000
+    depends_on:
+      litellm:
+        condition: service_healthy
+
+  warden:
+    build: { context: ../.., dockerfile: examples/demo/Dockerfile }
+    privileged: true # bubblewrap needs user namespaces
+    stdin_open: true
+    tty: true
+    command: ["bash"]
+    environment:
+      # No IdP in the demo: the bundle sets allow_dev_identity, so this is the identity.
+      WARDEN_DEV_IDENTITY: '{"subject":"demo-user","groups":["engineering"]}'
+    depends_on:
+      - mint
