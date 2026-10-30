@@ -8,21 +8,22 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-14, macos-15]
+        rep: [1, 2, 3, 4]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: concurrent shuffled
-        run: bash .github/spike/macos-proxy9.sh 100
+        run: bash .github/spike/macos-proxy10.sh 360
       - name: summary
         if: always()
         run: |
-          cat spike-out/summary9.txt || true
+          cat spike-out/summary10.txt || true
           echo ---- failures;  head -150 spike-out/warden-failures.log || true
           echo ---- sandbox log; grep -i 'deny\|network' spike-out/sandbox-stream.log | head -60 || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: spike-${{ matrix.os }}
+          name: spike-${{ matrix.os }}-${{ matrix.rep }}
           path: spike-out
