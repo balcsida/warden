@@ -1,6 +1,6 @@
-//! Windows sandbox (phase A) integration tests: the restricted token limits
-//! writes to the writable roots, `.git/hooks` and `.git/config` stay read-only
-//! and `.git` cannot be renamed, ACL grants are idempotent and do not follow
+//! Windows sandbox (phase A) integration tests: the restricted, Low-integrity token limits
+//! writes, deletes and renames to the writable roots, `.git/hooks` and `.git/config` stay
+//! read-only, `git commit` works, ACL grants are idempotent and do not follow
 //! junctions, the child cannot open warden or another launch for write, and
 //! killing warden kills the harness's whole tree.
 //! Network egress and deny-read are not enforced on Windows yet, so the bundle
@@ -209,11 +209,13 @@ fn repeated_launches_leave_acls_unchanged() {
     assert_eq!(first, (icacls(&e.ws), icacls(&hooks)));
 }
 
-// Known gap, so ignored: a WRITE_RESTRICTED token only runs the restricting-SID pass
-// for write-class rights, and DELETE is not one, so deny ACEs for capability SIDs
-// cannot stop a delete or rename (CI run 40988952461). Phase B closes it.
+// Known gap, so ignored. The child's Low integrity level stops it deleting or renaming
+// Medium objects, but inside a root it may delete what it may write, and `.git` must be
+// writable for git. A Medium `.git` label breaks `git commit` (no index.lock) and still
+// lets `ren .git` through the root's FILE_DELETE_CHILD; no DACL ACE can single out the
+// child (CI runs 40991032360, 40991849425, 40992782003). Phase B closes it.
 #[test]
-#[ignore = "phase A: DELETE is not checked against the restricting SIDs"]
+#[ignore = "phase A: .git is writable, and so deletable, inside a Low-integrity root"]
 fn git_dir_cannot_be_renamed_or_replaced_but_stays_writable() {
     let e = Env::new(true);
     let git = e.ws.join(".git");
@@ -246,7 +248,44 @@ fn git_dir_cannot_be_renamed_or_replaced_but_stays_writable() {
 }
 
 #[test]
-#[ignore = "phase A: DELETE is not checked against the restricting SIDs"]
+fn git_commit_works_in_the_sandbox() {
+    let e = Env::new(true);
+    std::fs::remove_dir_all(e.ws.join(".git")).unwrap();
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(&e.ws)
+            .output()
+            .unwrap()
+    };
+    assert!(git(&["init", "-q"]).status.success());
+    let out = e
+        .command(
+            "cmd",
+            &[
+                "git",
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "x",
+            ],
+        )
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{out:?}\n{}",
+        icacls(&e.ws.join(".git"))
+    );
+    assert!(git(&["log", "--oneline"]).stdout.len() > 1);
+}
+
+#[test]
 fn files_outside_the_roots_cannot_be_deleted_or_renamed() {
     let e = Env::new(true);
     let victim = e.outside.join("victim.txt");

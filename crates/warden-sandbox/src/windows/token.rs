@@ -16,8 +16,9 @@ use windows_sys::Win32::Security::{
     GetLengthSid, GetTokenInformation, LUA_TOKEN, LookupPrivilegeValueW, SE_PRIVILEGE_ENABLED,
     SID_AND_ATTRIBUTES, SetTokenInformation, TOKEN_ADJUST_DEFAULT, TOKEN_ADJUST_PRIVILEGES,
     TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DEFAULT_DACL, TOKEN_DUPLICATE,
-    TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER,
-    TokenDefaultDacl, TokenGroups, TokenUser, WRITE_RESTRICTED, WinWorldSid,
+    TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_PRIVILEGES, TOKEN_QUERY,
+    TOKEN_USER, TokenDefaultDacl, TokenGroups, TokenIntegrityLevel, TokenUser, WRITE_RESTRICTED,
+    WinWorldSid,
 };
 use windows_sys::Win32::Storage::FileSystem::READ_CONTROL;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
@@ -27,6 +28,7 @@ use super::{check, wide};
 
 const GENERIC_ALL: u32 = 0x1000_0000;
 const SE_GROUP_LOGON_ID: u32 = 0xC000_0000;
+const SE_GROUP_INTEGRITY: u32 = 0x20;
 
 /// A token information buffer; u64 backing keeps its header aligned.
 fn token_info(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> io::Result<Vec<u64>> {
@@ -134,6 +136,31 @@ fn set_default_dacl(token: HANDLE, user: *mut c_void, launch: *mut c_void) -> io
     Ok(())
 }
 
+/// Run the token at Low integrity: it cannot write to (or delete, or rename) the
+/// default Medium objects, only to those labelled Low.
+fn set_low_integrity(token: HANDLE) -> io::Result<()> {
+    let low = Sid::parse(super::acl::LOW)?;
+    let label = TOKEN_MANDATORY_LABEL {
+        Label: SID_AND_ATTRIBUTES {
+            Sid: low.as_ptr(),
+            Attributes: SE_GROUP_INTEGRITY,
+        },
+    };
+    // SAFETY: `label` and the SID it points to outlive the call.
+    let ok = unsafe {
+        SetTokenInformation(
+            token,
+            TokenIntegrityLevel,
+            (&label as *const TOKEN_MANDATORY_LABEL).cast(),
+            size_of::<TOKEN_MANDATORY_LABEL>() as u32 + GetLengthSid(low.as_ptr()),
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// DISABLE_MAX_PRIVILEGE drops SeChangeNotifyPrivilege too; without it nothing
 /// can traverse a directory it has no access to.
 fn enable_change_notify(token: HANDLE) -> io::Result<()> {
@@ -229,5 +256,6 @@ pub fn restricted(caps: &[&Sid]) -> io::Result<OwnedHandle> {
         launch.as_ptr(),
     )?;
     enable_change_notify(token.as_raw_handle())?;
+    set_low_integrity(token.as_raw_handle())?;
     Ok(token)
 }

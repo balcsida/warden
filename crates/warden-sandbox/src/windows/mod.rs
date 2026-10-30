@@ -74,6 +74,7 @@ impl Sandbox for WindowsSandbox {
         let caps = cap::for_roots(&spec.data_dir, &roots)?;
         for c in &caps {
             acl::grant_write(&c.root, c.sid.as_ptr())?;
+            acl::label_root(&c.root)?;
         }
         // keep .git/hooks and .git/config read-only (as on macOS and Linux): a planted
         // hook would run outside the sandbox on the developer's next commit. Deny the

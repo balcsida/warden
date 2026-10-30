@@ -1,5 +1,5 @@
-//! DACL edits on the writable roots. Every edit first looks for an equivalent
-//! ACE so repeated launches leave the ACLs unchanged. Masks follow codex
+//! DACL and mandatory-label edits on the writable roots. Every edit first looks
+//! for an equivalent ACE so repeated launches leave the ACLs unchanged. Masks follow codex
 //! `windows-sandbox-rs/src/acl.rs`.
 
 use std::ffi::c_void;
@@ -12,14 +12,16 @@ use windows_sys::Win32::Security::Authorization::{
     SetEntriesInAclW, SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::{
-    ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
-    DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
+    ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_REVISION, ACL_SIZE_INFORMATION, AclSizeInformation,
+    AddMandatoryAce, DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation, InitializeAcl,
+    LABEL_SECURITY_INFORMATION,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_APPEND_DATA, FILE_DELETE_CHILD, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
     FILE_GENERIC_WRITE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA,
 };
 
+use super::cap::Sid;
 use super::{check, wide};
 
 /// No WRITE_DAC (the child cannot rewrite ACLs) and no FILE_DELETE_CHILD (it
@@ -34,6 +36,10 @@ const WRITE_DENY: u32 = FILE_WRITE_DATA
 const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
 const ACCESS_DENIED_ACE_TYPE: u8 = 1;
 const CONTAINER_AND_OBJECT_INHERIT: u32 = 3;
+const INHERITED: u8 = 0x10;
+const SYSTEM_MANDATORY_LABEL_ACE_TYPE: u8 = 0x11;
+const SYSTEM_MANDATORY_LABEL_NO_WRITE_UP: u32 = 1;
+pub const LOW: &str = "S-1-16-4096";
 
 struct LocalAlloc(*mut c_void);
 
@@ -163,4 +169,93 @@ pub fn deny_write(path: &Path, sid: *mut c_void) -> io::Result<bool> {
         0
     };
     ensure_ace(path, sid, true, WRITE_DENY, inherit)
+}
+
+/// Whether the explicit (non-inherited) label ACEs of `sacl` are exactly one
+/// no-write-up Low label with `inherit` flags.
+///
+/// # Safety
+/// `sacl` is null or a valid ACL.
+unsafe fn has_low_label(sacl: *const ACL, low: *mut c_void, inherit: u32) -> bool {
+    let mut info: ACL_SIZE_INFORMATION = unsafe { std::mem::zeroed() };
+    if sacl.is_null()
+        || unsafe {
+            GetAclInformation(
+                sacl,
+                (&mut info as *mut ACL_SIZE_INFORMATION).cast(),
+                size_of::<ACL_SIZE_INFORMATION>() as u32,
+                AclSizeInformation,
+            )
+        } == 0
+    {
+        return false;
+    }
+    let mut explicit = (0..info.AceCount).filter_map(|i| {
+        let mut p: *mut c_void = std::ptr::null_mut();
+        let ok = unsafe { GetAce(sacl, i, &mut p) } != 0;
+        (ok && unsafe { (*(p as *const ACE_HEADER)).AceFlags } & INHERITED == 0).then_some(p)
+    });
+    let (Some(p), None) = (explicit.next(), explicit.next()) else {
+        return false;
+    };
+    let header = unsafe { &*(p as *const ACE_HEADER) };
+    // a label ACE has the same layout as an allowed ACE: header, mask, SID
+    let ace = p as *const ACCESS_ALLOWED_ACE;
+    header.AceType == SYSTEM_MANDATORY_LABEL_ACE_TYPE
+        && u32::from(header.AceFlags) == inherit
+        && unsafe {
+            (*ace).Mask == SYSTEM_MANDATORY_LABEL_NO_WRITE_UP
+                && EqualSid((&raw const (*ace).SidStart) as *mut c_void, low) != 0
+        }
+}
+
+/// Label `root` Low (no-write-up), inherited by everything below, so the Low-integrity
+/// child may write there while Medium objects elsewhere reject its writes, deletes and
+/// renames. Returns whether anything changed.
+pub fn label_root(root: &Path) -> io::Result<bool> {
+    let path = wide(root.as_os_str());
+    let low = Sid::parse(LOW)?;
+    let mut sacl: *mut ACL = std::ptr::null_mut();
+    let mut sd: *mut c_void = std::ptr::null_mut();
+    // SAFETY: `path` is NUL-terminated, out pointers are valid, the descriptor is
+    // freed by the guard and `acl` holds the header plus one 24-byte ACE.
+    unsafe {
+        check(GetNamedSecurityInfoW(
+            path.as_ptr(),
+            SE_FILE_OBJECT,
+            LABEL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut sacl,
+            &mut sd,
+        ))?;
+        let _sd = LocalAlloc(sd);
+        if has_low_label(sacl, low.as_ptr(), CONTAINER_AND_OBJECT_INHERIT) {
+            return Ok(false);
+        }
+        let mut acl = [0u32; 16];
+        let acl = acl.as_mut_ptr().cast::<ACL>();
+        if InitializeAcl(acl, 64, ACL_REVISION) == 0
+            || AddMandatoryAce(
+                acl,
+                ACL_REVISION,
+                CONTAINER_AND_OBJECT_INHERIT,
+                SYSTEM_MANDATORY_LABEL_NO_WRITE_UP,
+                low.as_ptr(),
+            ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        check(SetNamedSecurityInfoW(
+            path.as_ptr().cast_mut(),
+            SE_FILE_OBJECT,
+            LABEL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            acl,
+        ))?;
+    }
+    Ok(true)
 }

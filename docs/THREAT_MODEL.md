@@ -108,9 +108,10 @@ keychain is not a file on macOS but `~/Library/Keychains` is denied anyway).
   own sandbox use. If Apple removes it, the macOS backend must move to an
   `Endpoint Security`-free alternative (likely a helper using the same
   `sandbox_init` API, or Apple's Containerization). Tracked as a platform risk.
-- Windows (phase A): only a partial write limit holds (creating and modifying
-  files, not deleting or renaming them, see below). A restricted token (`WRITE_RESTRICTED`,
-  capability SIDs per writable root) stops writes outside the roots, and `.git\hooks`
+- Windows (phase A): only a partial write limit holds (outside the roots nothing can be
+  created, modified, deleted or renamed; inside them `.git` is not protected, see below).
+  A restricted token (`WRITE_RESTRICTED`, capability SIDs per writable root) running at
+  Low integrity, with the roots labelled Low, stops writes outside the roots, and `.git\hooks`
   and `.git\config` get deny-write ACEs if they exist at launch. **Deny-read is not
   enforced**: the child runs as the developer and can read `~/.ssh` and the rest.
   Writes into a folder where Everyone, the logon SID or a restricting SID already
@@ -118,13 +119,18 @@ keychain is not a file on macOS but `~/Library/Keychains` is denied anyway).
   after the run on purpose, since descendants may outlive warden; the process tree
   itself is killed with warden (job object). Phase B adds deny-read through a
   separate sandbox user.
-  - **Deleting and renaming are not limited.** A `WRITE_RESTRICTED` token checks the
-    restricting SIDs only for write-class rights, and DELETE is not one. The child can
-    delete or rename any file the developer can (`del`, `rd /s`, `ren`), inside or
-    outside the roots, and deny ACEs for capability SIDs do not stop it. That includes
-    renaming `.git` away and moving a copy with a planted hook back, which defeats the
-    `.git\hooks` and `.git\config` denies. Verified on windows-2022 (the ignored tests
-    in `sandbox_windows.rs`). Closing it needs phase B or a low-integrity token.
+  - **`.git` can be renamed or deleted inside a root.** A `WRITE_RESTRICTED` token checks
+    the restricting SIDs only for write-class rights, and DELETE is not one; the Low
+    integrity level and the Low label on the roots close that outside the roots (tested).
+    Inside a root the child may still delete or rename `.git`, `.git\hooks` and
+    `.git\config` (through `DELETE` on the object or `FILE_DELETE_CHILD` on its parent)
+    and move a copy with a planted hook back, which defeats the hook and config denies.
+    A Medium label on `.git` would stop it but also stops git creating `index.lock`, and no
+    ACE can single out the child (DESIGN §2.3 lists what was tried). Closing it needs
+    phase B (ignored test in `sandbox_windows.rs`).
+  - **Labels persist.** The Low label stays on the workspace after the run, so any other
+    Low-integrity process of the user can write there. The child itself cannot write HKCU
+    or most of `%LOCALAPPDATA%`, which breaks some harness tooling.
   - **Console injection.** The child shares the user's console and desktop. The job
     object blocks USER handles of other processes, desktop switching, global atoms and
     system-parameter changes, but the child can still write to the console input

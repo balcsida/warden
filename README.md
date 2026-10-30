@@ -18,7 +18,7 @@ egress proxy, and launch the harness inside an OS sandbox whose only way out is
 that proxy. The harness inherits your terminal, so interactive TUIs work unchanged.
 
 Status: milestone 1 (macOS and Linux). Windows is phase A: a partial write limit (no
-create or modify outside the roots, but deletes and renames are not blocked) and
+create, modify, delete or rename outside the roots; `.git` inside a root can still be renamed) and
 process-tree kill are enforced, network egress and deny-read paths are **not**, and
 `warden run` only starts when the bundle sets `defaults.sandbox_allow_degraded`.
 The elevated phase B (sandbox user and firewall rules) is still to come.

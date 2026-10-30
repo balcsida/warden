@@ -253,8 +253,8 @@ Backends in milestone 1:
   policy sets `sandbox.allow_degraded = true`; otherwise refuses.
 - `WindowsSandbox` (phase A, `warden-sandbox/src/windows/`, derived from codex's
   `windows-sandbox-rs`, see `THIRD_PARTY_NOTICES.md`). **Enforced**: writes are limited
-  to the `read_write` roots (creating and modifying files; **deleting and renaming
-  existing files is not limited**, see below), and the harness's whole process tree dies
+  to the `read_write` roots (creating, modifying, deleting and renaming files; **inside a
+  root, `.git` can still be deleted or renamed**, see below), and the harness's whole process tree dies
   with warden. **Not enforced**: network egress and `deny_read` (a restricted token
   cannot block sockets or reads). So `preflight` refuses unless
   `SandboxSpec.sandbox_allow_degraded` (`defaults.sandbox_allow_degraded`) is set, and
@@ -268,11 +268,28 @@ Backends in milestone 1:
   launch's processes for write (the logon SID is shared by every launch of a session).
   `cap_sids.json` is written atomically under a lock file, pruned of roots that no longer
   exist, and a corrupt file is moved to `cap_sids.json.bad`.
-  **DELETE gap**: the kernel runs the restricting-SID pass of a `WRITE_RESTRICTED` token
-  only for write-class rights, and DELETE is not one, so the child can delete or rename
-  any file the user could, outside the roots too (and rename `.git` away); verified on
-  windows-2022 (ignored tests in `sandbox_windows.rs`). Phase B (a separate sandbox
-  user) or a low-integrity token with labelled roots would close it. Capability SIDs persist in
+  **Low integrity**: the restricting-SID pass of a `WRITE_RESTRICTED` token runs only
+  for write-class rights and DELETE is not one, so on its own the child could delete or
+  rename anything the user can. The token therefore also runs at Low integrity
+  (`TokenIntegrityLevel` S-1-16-4096) and every writable root gets an inheritable Low
+  mandatory label (no-write-up, `SetNamedSecurityInfoW`, idempotent like the grants), so
+  Medium files outside the roots reject its writes, deletes and renames (verified on
+  windows-2022, `files_outside_the_roots_cannot_be_deleted_or_renamed`). **`.git` gap**:
+  inside a root the child may still delete or rename `.git` (and `.git\hooks`, `.git\config`)
+  and plant a hook. Tried on windows-2022: a Medium label on `.git` (with an inherit-only
+  Low label for its children) blocks `DELETE` on `.git` but also creating `index.lock`
+  in it, so `git commit` fails, and `ren .git` still succeeds through the root's
+  `FILE_DELETE_CHILD`; a deny ACE for the integrity SID, or a conditional ACE
+  `Member_of {SID(LW)}`, never matches (integrity SIDs are not part of the DACL group
+  match); only an unconditional deny of `DELETE`/`FILE_DELETE_CHILD` combined with the
+  Medium label stopped the rename, and that also locks out the developer. Phase B (a
+  separate sandbox user, whose SID a DACL can name) closes it; the ignored test
+  `git_dir_cannot_be_renamed_or_replaced_but_stays_writable` records the target.
+  Side effects: the labels persist on the workspace, so any other Low-integrity process
+  of the user (a browser renderer, another sandbox) can then write there; Low-integrity
+  processes cannot write HKCU or most of `%LOCALAPPDATA%`, which harnesses may need
+  (their home and `TEMP` are writable roots, so they are labelled); UIPI stops the child
+  sending window messages and input to higher-integrity windows. Capability SIDs persist in
   `<data dir>\cap_sids.json`, so the ACL grants (generic read/write/execute/delete,
   no `WRITE_DAC`, no `FILE_DELETE_CHILD`, inherited) are made once per root and
   repeated launches leave the ACLs unchanged. `.git\hooks` and `.git\config` get a
