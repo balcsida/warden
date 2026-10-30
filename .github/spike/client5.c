@@ -15,13 +15,15 @@ int main(int argc, char **argv) {
   long long age_ms = (t.tv_sec * 1000000000LL + t.tv_nsec - atoll(argv[4])) / 1000000;
   char r[256] = "";
   int bad = 0;
+  long long failns = 0;
   for (int i = 0; i < n && i < 255; i++) {
     int s = socket(AF_INET, SOCK_STREAM, 0);
     int e = connect(s, (struct sockaddr *)&a, sizeof a) ? errno : 0;
     close(s);
+    if (e && !bad) { clock_gettime(CLOCK_REALTIME, &t); failns = t.tv_sec * 1000000000LL + t.tv_nsec; }
     r[i] = e == 0 ? '.' : e == EPERM ? 'X' : '?';
     bad += e != 0;
   }
-  printf("%s age_ms=%lld\n", r, age_ms);
+  printf("%s age_ms=%lld failns=%lld\n", r, age_ms, failns);
   return bad != 0;
 }
