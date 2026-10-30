@@ -745,6 +745,9 @@ fn launch(
         e.extend(plan.env_with_secret());
         e
     };
+    // before the spawn, so a Ctrl-C right after it cannot kill warden ahead of the harness
+    #[cfg(windows)]
+    warden_sandbox::windows::ignore_console_interrupts();
     let mut child = sandbox
         .spawn(&spec, &argv)
         .map_err(|e| Fail::new(EX_UNAVAILABLE, e))?;
