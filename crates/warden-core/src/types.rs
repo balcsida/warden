@@ -242,6 +242,10 @@ impl LaunchedChild {
 pub trait Sandbox {
     fn name(&self) -> &str;
     fn preflight(&self, spec: &SandboxSpec) -> Result<(), SandboxError>;
+    /// A warning when this backend enforces less than the full policy (Windows phase A).
+    fn degraded(&self) -> Option<&'static str> {
+        None
+    }
     fn spawn(&self, spec: &SandboxSpec, argv: &[OsString]) -> Result<LaunchedChild, SandboxError>;
     fn wait(&self, child: &mut LaunchedChild) -> Result<ExitStatus, SandboxError>;
     fn signal(&self, child: &LaunchedChild, sig: Signal) -> Result<(), SandboxError>;
@@ -286,8 +290,6 @@ pub struct Defaults {
     #[serde(default = "default_ttl_secs", with = "secs")]
     pub credential_ttl: Duration,
     pub max_budget_usd: Option<f64>,
-    #[serde(default = "default_true")]
-    pub protect_git_internals: bool,
     #[serde(default)]
     pub sandbox_allow_degraded: bool,
     /// Honour `WARDEN_DEV_IDENTITY` (a JSON identity, no IdP). For CI and conformance tests only.
@@ -302,9 +304,6 @@ pub struct Defaults {
     pub audit: Option<AuditConfig>,
 }
 
-fn default_true() -> bool {
-    true
-}
 fn default_ttl_secs() -> Duration {
     Duration::from_secs(8 * 3600)
 }

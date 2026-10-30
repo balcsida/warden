@@ -718,6 +718,10 @@ fn launch(
         audit.flush(Duration::from_secs(2));
         return Err(Fail::new(EX_UNAVAILABLE, e));
     }
+    let degraded = sandbox.degraded();
+    if let Some(warning) = degraded {
+        eprintln!("warden: WARNING {warning}");
+    }
     if no_sandbox {
         eprintln!(
             "warden: WARNING running {harness} WITHOUT a sandbox (permitted by policy for {})",
@@ -764,6 +768,7 @@ fn launch(
             .attr("model", &model)
             .attr("provider", provider_id)
             .attr("sandbox", sandbox.name())
+            .attr("degraded", degraded.is_some())
             .attr("workspace", workspace.display())
             .attr("pid", child.pid),
     );
@@ -778,7 +783,7 @@ fn launch(
     #[cfg(unix)]
     let code = warden_sandbox::exit_code(status);
     #[cfg(not(unix))]
-    let code = status.code().filter(|c| (0..=255).contains(c)).unwrap_or(1);
+    let code = status.code().unwrap_or(1);
     audit.emit(
         Event::new("harness.exit")
             .attr("harness", harness)
@@ -786,6 +791,10 @@ fn launch(
     );
     audit.flush(Duration::from_secs(3));
     drop(proxy);
+    // ExitCode carries a u8, but Windows exit codes are 32 bits wide
+    if cfg!(windows) {
+        std::process::exit(code);
+    }
     Ok(ExitCode::from(code.clamp(0, 255) as u8))
 }
 
