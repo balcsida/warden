@@ -110,7 +110,10 @@ fn start_mint(f: &Fixture, litellm_url: &str, master: &str, port: u16) -> Server
 }
 
 fn complete(litellm_url: &str, key: &str) -> reqwest::blocking::Response {
-    reqwest::blocking::Client::new()
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
         .post(format!("{litellm_url}/v1/chat/completions"))
         .bearer_auth(key)
         .json(&json!({"model": "claude-sonnet-5", "messages": [{"role": "user", "content": "hi"}]}))
@@ -164,7 +167,10 @@ fn real_litellm_mint_run_revoke() {
     );
 
     // LiteLLM keeps the record of a deleted key, so the scoping is still visible.
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap();
     let info: Value = client
         .get(format!("{url}/key/info"))
         .query(&[("key", key)])

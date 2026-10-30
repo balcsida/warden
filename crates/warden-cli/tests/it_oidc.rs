@@ -105,7 +105,10 @@ fn warden(f: &Fixture) -> Command {
 /// Approve a device user code the way a browser would: submit it to the IdP and
 /// follow the redirects through the mock connector.
 fn approve(issuer: &str, user_code: &str) {
-    let resp = reqwest::blocking::Client::new()
+    let resp = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
         .post(format!("{issuer}/device/auth/verify_code"))
         .form(&[("user_code", user_code)])
         .send()
@@ -115,7 +118,10 @@ fn approve(issuer: &str, user_code: &str) {
 
 /// Full device flow driven over HTTP; returns the raw ID token.
 fn id_token_for(issuer: &str, client_id: &str) -> String {
-    let http = reqwest::blocking::Client::new();
+    let http = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap();
     let dev: serde_json::Value = http
         .post(format!("{issuer}/device/code"))
         .form(&[
@@ -293,7 +299,7 @@ fn mint_serve_verifies_real_id_token() {
     });
     assert!(up, "mint-serve did not start listening on port {mint_port}");
     let mint = |token: &str| {
-        reqwest::blocking::Client::new()
+        reqwest::blocking::Client::builder().no_proxy().build().unwrap()
             .post(format!("http://127.0.0.1:{mint_port}/v1/mint"))
             .bearer_auth(token)
             .json(&serde_json::json!({"harness": "probe", "models": ["claude-sonnet-5"], "ttl_secs": 60}))
