@@ -253,21 +253,34 @@ impl Provider for LiteLlmProvider {
     }
 
     fn revoke(&self, cred: &Credential) -> Result<(), ProviderError> {
+        // mint-serve makes two LiteLLM calls of up to 3 s each; waiting for both keeps a
+        // late deletion from following a reported failure.
+        let timeout = Duration::from_secs(if self.mint_url.is_some() { 8 } else { 2 });
         let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(2))
+            .timeout(timeout)
             .build()
             .map_err(|e| ProviderError::Other(e.to_string()))?;
-        let url = litellm_url(&self.base_url, ApiFormat::Litellm)
-            .join("key/delete")
-            .expect("url");
-        // A virtual key may delete itself.
-        client
-            .post(url)
-            .bearer_auth(cred.secret.expose_secret())
-            .json(&serde_json::json!({ "keys": [cred.secret.expose_secret()] }))
+        // OSS LiteLLM (v1.106.6) answers 401 when a virtual key deletes itself: only the
+        // master key may. Behind a mint server it deletes on the key's behalf.
+        let key = cred.secret.expose_secret();
+        let req = match &self.mint_url {
+            Some(m) => client.post(m.join("v1/revoke").expect("url")),
+            None => client
+                .post(
+                    litellm_url(&self.base_url, ApiFormat::Litellm)
+                        .join("key/delete")
+                        .expect("url"),
+                )
+                .json(&serde_json::json!({ "keys": [key] })),
+        };
+        let resp = req
+            .bearer_auth(key)
             .send()
             .map_err(|e| ProviderError::Other(e.to_string()))?;
-        Ok(())
+        match resp.status() {
+            s if s.is_success() => Ok(()),
+            s => Err(ProviderError::Other(format!("revoke returned {s}"))),
+        }
     }
 }
 
@@ -403,5 +416,42 @@ mod tests {
         assert_eq!(body["models"][0], "claude-sonnet-5");
         assert_eq!(body["user_id"], "alice");
         assert_eq!(body["max_budget"], 5.0);
+    }
+
+    #[test]
+    fn revoke_goes_through_the_mint_server_when_configured() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let mut seen = vec![];
+            for (status, r) in [200, 403].into_iter().zip(server.incoming_requests()) {
+                let auth = r
+                    .headers()
+                    .iter()
+                    .find(|h| h.field.equiv("authorization"))
+                    .map(|h| h.value.to_string())
+                    .unwrap_or_default();
+                seen.push((r.url().to_string(), auth));
+                r.respond(tiny_http::Response::empty(status)).unwrap();
+            }
+            seen
+        });
+        let p = LiteLlmProvider {
+            id: "gw".into(),
+            base_url: "http://127.0.0.1:9".parse().unwrap(),
+            mint_url: Some(format!("http://127.0.0.1:{port}").parse().unwrap()),
+            http: LiteLlmHttp::default(),
+        };
+        let cred = Credential {
+            base_url: p.base_url.clone(),
+            format: ApiFormat::Litellm,
+            secret: SecretString::from("sk-virtual"),
+            expires_at: None,
+            models: vec![],
+        };
+        p.revoke(&cred).unwrap();
+        assert!(p.revoke(&cred).is_err(), "a refusal must surface");
+        let expected = ("/v1/revoke".to_string(), "Bearer sk-virtual".to_string());
+        assert_eq!(handle.join().unwrap(), vec![expected.clone(), expected]);
     }
 }

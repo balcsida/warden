@@ -109,6 +109,12 @@ The conformance test launches the real, installed harness against a mock gateway
 and checks that it used the injected base URL and key. CI runs it nightly for
 every harness on macOS and Linux.
 
+The `it_*` tests run warden against real services in Docker and skip unless their
+environment is set: `it_litellm` (OSS LiteLLM behind `mint-serve`), `it_otlp` (an
+OpenTelemetry Collector) and `it_oidc` (a Dex IdP; needs an unlocked OS keyring).
+Each file's header lists its variables, `crates/warden-cli/tests/it/` holds the
+container configs, and `.github/workflows/integration.yml` shows the full setup.
+
 ## License
 
 Apache-2.0. The macOS and Linux sandbox profiles derive from

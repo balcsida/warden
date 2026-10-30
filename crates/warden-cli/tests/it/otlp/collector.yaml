@@ -1,0 +1,26 @@
+# Collector for tests/it_otlp.rs: OTLP/HTTP in, JSON lines out. The receiver
+# requires `Authorization: Bearer wit-otlp-token`, so records only land in the
+# file if warden sent its configured header.
+extensions:
+  bearertokenauth:
+    token: wit-otlp-token
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        auth:
+          authenticator: bearertokenauth
+
+exporters:
+  file:
+    path: /out/logs.json
+    flush_interval: 200ms
+
+service:
+  extensions: [bearertokenauth]
+  pipelines:
+    logs:
+      receivers: [otlp]
+      exporters: [file]

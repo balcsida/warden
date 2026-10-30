@@ -102,12 +102,14 @@ pub trait IdentityProvider {
 pub struct IdentityConfig {
     pub issuer: Url,                  // discovery at {issuer}/.well-known/openid-configuration
     pub client_id: String,
-    pub scopes: Vec<String>,          // default ["openid", "profile", "email", "groups"]
+    pub scopes: Vec<String>,          // default ["openid", "profile", "email", "groups", "offline_access"]
     pub groups_claim: String,         // default "groups"; Entra uses "groups", Okta "groups", Keycloak "groups" or "realm_access.roles" (dotted path supported)
 }
 ```
 
-One implementation: `OidcDeviceFlow`. The refresh token goes to the keychain
+One implementation: `OidcDeviceFlow`. `identity.scopes` replaces the default list
+wholesale. `offline_access` is sent only if the IdP's `scopes_supported` is absent or
+lists it, since Google and some Keycloak setups answer `invalid_scope` otherwise. The refresh token goes to the keychain
 (`keyring` crate, service `warden`, account `<issuer>|<client_id>`). The ID token is
 held in memory only. `warden run` calls `current()`, which refreshes silently; if
 the refresh fails the launch stops with "run `warden login`".
@@ -157,10 +159,11 @@ Implementations:
   testing and small orgs.
 - `LiteLlmProvider` — offers `LiteLlm` first, then the formats the gateway exposes
   (`/anthropic` and `/v1` paths). `POST {litellm_url}/key/generate` with
-  `{"duration": "<ttl>", "models": [...], "max_budget": <from policy>, "user_id": <identity.subject>, "key_alias": "warden/<sub>/<harness>/<timestamp>", "metadata": {"harness": ..., "warden_version": ...}}`.
+  `{"duration": "<ttl>", "models": [...], "max_budget": <from policy>, "user_id": <identity.subject>, "key_alias": "warden/<sub>/<harness>/<timestamp>", "metadata": {"harness": ..., "issued_by": "warden"}}`.
   Authentication to the management API is the user's OIDC ID token (LiteLLM JWT
   auth, `general_settings.enable_jwt_auth`); warden never holds a LiteLLM master key.
-  See open question Q3. `revoke` calls `/key/delete`.
+  See open question Q3. `revoke` calls `/key/delete`, or mint-serve's `/v1/revoke` when
+  a `mint_url` is set (§9).
 
 ### 2.3 Sandbox
 
@@ -733,7 +736,8 @@ machine. Step 6 is the one network call and is bounded.
     `expires_at` and the harness is still running 5 min before it, print one line to
     stderr ("credential expires in 5 min; save your work"); re-issuing into a
     running process is not possible with env-var injection (see Q4).
-11. **Exit.** `Provider::revoke()` best-effort (2s timeout). Flush audit (bounded,
+11. **Exit.** `Provider::revoke()` best-effort (2s timeout; 8s through mint-serve, which makes two
+    LiteLLM calls of up to 3s each). Flush audit (bounded,
     3s; drop on timeout). Remove proxy socket/tempdir. Exit with the child's code, or
     `128 + signal`.
 
@@ -762,7 +766,7 @@ are structured (`serde` structs), mapped to OTel log records with
 background task; when full, events are dropped and a counter is reported in the
 next successful export. Never blocks launch. Event names:
 `identity.login`, `policy.loaded`, `policy.rejected`, `policy.decision`,
-`credential.issued`, `credential.revoked`, `harness.launch`, `harness.exit`,
+`credential.issued`, `credential.revoked` (or `credential.revoke_failed`), `harness.launch`, `harness.exit`,
 `sandbox.network_denied`, `sandbox.preflight_failed`.
 
 Note: the OTLP endpoint itself must be reachable from warden (outside the sandbox).
@@ -901,6 +905,18 @@ Deviations from the design above, all deliberate:
   and returns LiteLLM's `/key/generate` response. Stateless; run it anywhere that
   can reach the proxy and the IdP. This is the first control-plane piece and is
   deliberately a subcommand of the same binary.
+  `POST /v1/revoke` (bearer = the virtual key) deletes a key it minted: on OSS LiteLLM
+  (verified v1.106.6) `/key/delete` with the virtual key itself is a 401, only the
+  master key may delete. Holding the key proves ownership, and works after the ID
+  token has expired; keys without `metadata.issued_by = warden` are refused, as is any bearer that is not
+  shaped like a virtual key (`sk-…`).
+  `tests/it_litellm.rs` runs the whole path against a real proxy (opt-in, `tests/it/litellm/`).
+- **Egress proxy, plain HTTP**: forwarded in origin-form with `Connection: close`
+  (one request per proxied connection), the client's `Host` replaced by the target's
+  authority, and `TE`/`Upgrade` dropped as hop-by-hop, so upgrades (`ws://`) do not
+  work through the proxy. obs-fold and bare LF in the head are refused with 400.
+  Absolute-form, as first written, was 404'd by uvicorn (LiteLLM); CONNECT tunnels
+  (and so `wss://`) are unaffected.
 
 - **Q10 Name.** `warden` is taken on crates.io by an unrelated crate. Binary name can
   stay `warden`; the crate names can be `warden-*` only if those are free (they

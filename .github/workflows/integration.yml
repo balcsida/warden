@@ -1,0 +1,131 @@
+name: integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # warden's OTLP audit exporter against a real OpenTelemetry Collector.
+  otlp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor; the
+          # sandbox needs them. This mirrors what a managed fleet would configure.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: Start collector
+        # Not a service container: it needs the repo's config file mounted. Run as
+        # the runner's uid so the host test can read the file the collector writes.
+        run: |
+          mkdir -p "$RUNNER_TEMP/otlp-out"
+          docker run -d --name wit-otlp-collector --user "$(id -u):$(id -g)" \
+            -p 14318:4318 \
+            -v "$PWD/crates/warden-cli/tests/it/otlp/collector.yaml:/etc/otelcol-contrib/config.yaml:ro" \
+            -v "$RUNNER_TEMP/otlp-out:/out" \
+            otel/opentelemetry-collector-contrib:0.164.0
+          for _ in $(seq 30); do
+            # 401 without the bearer token means the receiver is up.
+            [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:14318/v1/logs)" = 401 ] && exit 0
+            sleep 1
+          done
+          docker logs wit-otlp-collector
+          exit 1
+      - run: cargo test -p warden-cli --test it_otlp -- --nocapture
+        env:
+          WARDEN_IT_REQUIRED: "1"
+          WARDEN_IT_OTLP_ENDPOINT: http://127.0.0.1:14318/v1/logs
+          WARDEN_IT_OTLP_FILE: ${{ runner.temp }}/otlp-out/logs.json
+      - name: Collector logs
+        if: failure()
+        run: docker logs wit-otlp-collector
+
+  # Real OSS LiteLLM (mock_response models, no upstream keys) behind `warden mint-serve`.
+  litellm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      WARDEN_IT_REQUIRED: "1"
+      WARDEN_IT_LITELLM_URL: http://127.0.0.1:14000
+      WARDEN_IT_LITELLM_MASTER_KEY: sk-it-master-0000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor; the
+          # sandbox needs them. This mirrors what a managed fleet would configure.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: Start Postgres and LiteLLM
+        run: docker compose -f crates/warden-cli/tests/it/litellm/compose.yaml up -d --wait
+      - name: Wait for LiteLLM
+        run: |
+          for _ in $(seq 60); do
+            curl -sf "$WARDEN_IT_LITELLM_URL/health/readiness" && exit 0
+            sleep 2
+          done
+          docker logs wit-litellm-proxy
+          exit 1
+      - run: cargo test -p warden-cli --test it_litellm -- --nocapture
+      - name: LiteLLM logs
+        if: failure()
+        run: docker logs wit-litellm-proxy
+
+  # Real IdP: `warden login`, token refresh, `warden run` and
+  # `warden mint-serve` against Dex (config in crates/warden-cli/tests/it/oidc).
+  oidc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      WARDEN_IT_REQUIRED: "1"
+      WARDEN_IT_OIDC_ISSUER: http://127.0.0.1:5556/dex
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install bubblewrap and keyring
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap gnome-keyring dbus-user-session
+          # Same as ci.yml: Ubuntu 24.04 restricts unprivileged user namespaces.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: Start Dex
+        run: |
+          sed "s|ISSUER_URL|$WARDEN_IT_OIDC_ISSUER|" \
+            crates/warden-cli/tests/it/oidc/dex.yaml > "$RUNNER_TEMP/dex.yaml"
+          docker run -d --name dex --network host \
+            -v "$RUNNER_TEMP/dex.yaml:/etc/dex/config.yaml:ro" \
+            ghcr.io/dexidp/dex:v2.45.1 dex serve /etc/dex/config.yaml
+          discovery=$WARDEN_IT_OIDC_ISSUER/.well-known/openid-configuration
+          for _ in $(seq 60); do
+            curl -fs "$discovery" >/dev/null && exit 0
+            sleep 1
+          done
+          docker logs dex
+          exit 1
+      - name: Test against Dex
+        run: |
+          dbus-run-session -- sh -c '
+            echo -n pw | gnome-keyring-daemon --unlock --components=secrets >/dev/null
+            cargo test -p warden-cli --test it_oidc -- --test-threads=1'
+      - name: Dex logs
+        if: failure()
+        run: docker logs dex

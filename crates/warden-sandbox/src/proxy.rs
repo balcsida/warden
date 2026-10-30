@@ -1,4 +1,4 @@
-//! Allowlisting egress proxy: HTTP CONNECT, plain HTTP forward (absolute-form)
+//! Allowlisting egress proxy: HTTP CONNECT, plain HTTP forward (sent on in origin-form)
 //! and SOCKS5 CONNECT with hostname addressing. No TLS interception. Runs
 //! outside the sandbox; the sandbox lets the child reach only this listener.
 
@@ -222,10 +222,73 @@ where
             .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             .await?;
     } else {
+        let Some(head) = origin_form(&head) else {
+            return respond(&mut client, "400 Bad Request").await;
+        };
         upstream.write_all(&head).await?;
     }
     let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
     Ok(())
+}
+
+/// Rewrite a proxy request (`GET http://host/p HTTP/1.1`) to the origin-form an
+/// origin server expects (`GET /p HTTP/1.1`; RFC 9112 §3.2.1), force
+/// `Connection: close` (later requests on a kept-alive connection would be piped
+/// unparsed, still in absolute form) and replace the client's `Host` with the
+/// target's authority, so the child cannot name another virtual host on an
+/// allowlisted address. Works on bytes: header values need not be UTF-8. Rejects
+/// obs-fold and bare LF (RFC 9112 §5.2). Bytes after the header (body) pass through.
+fn origin_form(head: &[u8]) -> Option<Vec<u8>> {
+    let end = head.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let block = &head[..end];
+    if block
+        .iter()
+        .enumerate()
+        .any(|(i, &b)| b == b'\n' && (i == 0 || block[i - 1] != b'\r'))
+    {
+        return None;
+    }
+    let mut lines = block
+        .split(|&b| b == b'\n')
+        .map(|l| l.strip_suffix(b"\r").unwrap_or(l));
+    let request_line = std::str::from_utf8(lines.next()?).ok()?;
+    let mut parts = request_line.split_whitespace();
+    let (method, target, version) = (parts.next()?, parts.next()?, parts.next()?);
+    let rest = target.strip_prefix("http://")?;
+    let split = rest.find(['/', '?']).unwrap_or(rest.len());
+    let (authority, path) = (&rest[..split], &rest[split..]);
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    let mut out = format!("{method} {path} {version}\r\nHost: {authority}\r\n").into_bytes();
+    for line in lines {
+        if line.starts_with(b" ") || line.starts_with(b"\t") {
+            return None;
+        }
+        let name = line
+            .split(|&b| b == b':')
+            .next()
+            .unwrap_or_default()
+            .trim_ascii();
+        let drop = [
+            "host",
+            "connection",
+            "proxy-connection",
+            "keep-alive",
+            "proxy-authorization",
+            "te",
+            "upgrade",
+        ];
+        if !drop.iter().any(|h| name.eq_ignore_ascii_case(h.as_bytes())) {
+            out.extend_from_slice(line);
+            out.extend_from_slice(b"\r\n");
+        }
+    }
+    out.extend_from_slice(b"Connection: close\r\n\r\n");
+    out.extend_from_slice(&head[end + 4..]);
+    Some(out)
 }
 
 async fn respond<S: tokio::io::AsyncWrite + Unpin>(
@@ -442,11 +505,51 @@ mod tests {
             "GET http://127.0.0.1:{echo}/x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
         )
         .unwrap();
-        // echo server mirrors the forwarded head back
-        assert!(read_some(&mut s).starts_with("GET http://127.0.0.1"));
+        // echo server mirrors the forwarded head back, now in origin-form
+        assert!(read_some(&mut s).starts_with("GET /x HTTP/1.1\r\n"));
         let mut s = connect(&proxy);
         write!(s, "GET /relative HTTP/1.1\r\n\r\n").unwrap();
         assert!(read_some(&mut s).starts_with("HTTP/1.1 400"));
+    }
+
+    #[test]
+    fn origin_form_rewrites_target_and_hop_headers() {
+        let head = b"POST http://gw:4000/v1/chat?x=1 HTTP/1.1\r\nHost: gw:4000\r\nProxy-Connection: keep-alive\r\nconnection: keep-alive\r\nAuthorization: Bearer k\r\n\r\n{\"a\":1}";
+        let out = String::from_utf8(origin_form(head).unwrap()).unwrap();
+        assert_eq!(
+            out,
+            "POST /v1/chat?x=1 HTTP/1.1\r\nHost: gw:4000\r\nAuthorization: Bearer k\r\nConnection: close\r\n\r\n{\"a\":1}"
+        );
+        let bare = origin_form(b"GET http://gw HTTP/1.1\r\n\r\n").unwrap();
+        assert!(bare.starts_with(b"GET / HTTP/1.1\r\nHost: gw\r\n"));
+        assert!(bare.starts_with(b"GET / HTTP/1.1\r\n"));
+        let query = origin_form(b"GET http://gw?q HTTP/1.1\r\n\r\n").unwrap();
+        assert!(query.starts_with(b"GET /?q HTTP/1.1\r\n"));
+    }
+
+    #[test]
+    fn origin_form_host_comes_from_target() {
+        let out = origin_form(
+            b"GET http://allowed.example:8080/ HTTP/1.1\r\nhost: other.internal\r\nTE: trailers\r\nUpgrade: websocket\r\nX: 1\r\n\r\n",
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            b"GET / HTTP/1.1\r\nHost: allowed.example:8080\r\nX: 1\r\nConnection: close\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn origin_form_passes_non_utf8_header_bytes() {
+        let out = origin_form(b"GET http://gw/ HTTP/1.1\r\nX-Name: caf\xe9\r\n\r\n").unwrap();
+        assert!(out.windows(5).any(|w| w == b"caf\xe9\r"));
+    }
+
+    #[test]
+    fn origin_form_rejects_obs_fold_and_bare_lf() {
+        assert!(origin_form(b"GET http://gw/ HTTP/1.1\r\nA: b\r\n c\r\n\r\n").is_none());
+        assert!(origin_form(b"GET http://gw/ HTTP/1.1\r\nA: b\r\n\tc\r\n\r\n").is_none());
+        assert!(origin_form(b"GET http://gw/ HTTP/1.1\r\nA: b\nHost: x\r\n\r\n").is_none());
     }
 
     #[test]

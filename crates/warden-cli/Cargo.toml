@@ -42,3 +42,4 @@ libc = "0.2"
 
 [dev-dependencies]
 reqwest.workspace = true
+base64 = "0.22"

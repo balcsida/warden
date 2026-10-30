@@ -646,8 +646,17 @@ fn launch(
     let status = sandbox.wait(&mut child).map_err(|e| Fail::new(1, e))?;
 
     // 11. exit
-    let _ = provider.revoke(&cred);
-    audit.emit(Event::new("credential.revoked").attr("provider", provider_id));
+    match provider.revoke(&cred) {
+        Ok(()) => audit.emit(Event::new("credential.revoked").attr("provider", provider_id)),
+        Err(e) => {
+            eprintln!("warden: could not revoke the credential ({e}); it lapses at its TTL");
+            audit.emit(
+                Event::new("credential.revoke_failed")
+                    .attr("provider", provider_id)
+                    .attr("error", e),
+            );
+        }
+    }
     #[cfg(unix)]
     let code = warden_sandbox::exit_code(status);
     #[cfg(not(unix))]
