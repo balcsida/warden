@@ -102,10 +102,11 @@ pub fn groups_from(extra: &serde_json::Map<String, serde_json::Value>, path: &st
     }
 }
 
+/// Also returns the IdP's `scopes_supported`, if it advertises any.
 async fn client(
     cfg: &IdentityConfig,
     http: &openidconnect::reqwest::Client,
-) -> Result<Client, IdentityError> {
+) -> Result<(Client, Option<Vec<String>>), IdentityError> {
     let issuer =
         IssuerUrl::new(cfg.issuer.as_str().trim_end_matches('/').to_string()).map_err(perr)?;
     let meta = CoreProviderMetadata::discover_async(issuer, http)
@@ -134,6 +135,9 @@ async fn client(
         .token_endpoint()
         .cloned()
         .ok_or_else(|| IdentityError::Provider("IdP has no token_endpoint".into()))?;
+    let supported = meta
+        .scopes_supported()
+        .map(|v| v.iter().map(|s| s.to_string()).collect());
     let c: Client = openidconnect::Client::from_provider_metadata(
         meta,
         ClientId::new(cfg.client_id.clone()),
@@ -141,7 +145,17 @@ async fn client(
     )
     .set_device_authorization_url(DeviceAuthorizationUrl::new(dev).map_err(perr)?)
     .set_token_uri(token_url);
-    Ok(c)
+    Ok((c, supported))
+}
+
+/// Google and some Keycloak setups reject unknown scopes with `invalid_scope`, so
+/// `offline_access` is only requested when the IdP does not rule it out.
+fn requested_scopes(configured: &[String], supported: Option<&[String]>) -> Vec<String> {
+    configured
+        .iter()
+        .filter(|s| *s != "offline_access" || supported.is_none_or(|v| v.iter().any(|x| x == *s)))
+        .cloned()
+        .collect()
 }
 
 fn http_client() -> Result<openidconnect::reqwest::Client, IdentityError> {
@@ -193,7 +207,7 @@ fn save(cfg: &IdentityConfig, stored: &Stored) -> Result<(), IdentityError> {
 pub fn verify_id_token(cfg: &IdentityConfig, token: &str) -> Result<Identity, IdentityError> {
     rt().block_on(async {
         let http = http_client()?;
-        let c = client(cfg, &http).await?;
+        let (c, _) = client(cfg, &http).await?;
         let id_token: openidconnect::IdToken<
             Extra,
             CoreGenderClaim,
@@ -225,10 +239,10 @@ impl IdentityProvider for OidcDeviceFlow {
     fn login(&self, cfg: &IdentityConfig) -> Result<Identity, IdentityError> {
         let (identity, stored) = rt().block_on(async {
             let http = http_client()?;
-            let c = client(cfg, &http).await?;
+            let (c, supported) = client(cfg, &http).await?;
             let mut req = c.exchange_device_code();
-            for s in &cfg.scopes {
-                req = req.add_scope(Scope::new(s.clone()));
+            for s in requested_scopes(&cfg.scopes, supported.as_deref()) {
+                req = req.add_scope(Scope::new(s));
             }
             let details: openidconnect::DeviceAuthorizationResponse<
                 openidconnect::EmptyExtraDeviceAuthorizationFields,
@@ -262,7 +276,7 @@ impl IdentityProvider for OidcDeviceFlow {
         let stored: Stored = serde_json::from_str(&raw).map_err(|_| IdentityError::NotLoggedIn)?;
         let (identity, refreshed) = rt().block_on(async {
             let http = http_client()?;
-            let c = client(cfg, &http).await?;
+            let (c, _) = client(cfg, &http).await?;
             // Still valid for 5 minutes: verify the cached token locally and reuse it.
             if stored.expires_at > now() + 300 {
                 let id_token: openidconnect::IdToken<
@@ -332,6 +346,21 @@ impl IdentityProvider for StaticIdentity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offline_access_only_when_the_idp_allows_it() {
+        let cfg: Vec<String> = ["openid", "offline_access"].map(String::from).to_vec();
+        let sup = |v: &[&str]| Some(v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(requested_scopes(&cfg, None), cfg);
+        assert_eq!(
+            requested_scopes(&cfg, sup(&["openid", "offline_access"]).as_deref()),
+            cfg
+        );
+        assert_eq!(
+            requested_scopes(&cfg, sup(&["openid", "email"]).as_deref()),
+            ["openid"]
+        );
+    }
 
     #[test]
     fn groups_paths() {

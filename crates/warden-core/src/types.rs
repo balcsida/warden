@@ -66,7 +66,8 @@ pub struct IdentityConfig {
 }
 
 /// `offline_access` is what makes Dex, Okta and Entra return the refresh token
-/// that `current()` needs once the ID token expires.
+/// that `current()` needs once the ID token expires. Login drops it again when the
+/// IdP's `scopes_supported` does not list it.
 fn default_scopes() -> Vec<String> {
     ["openid", "profile", "email", "groups", "offline_access"]
         .map(String::from)

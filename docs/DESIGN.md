@@ -107,7 +107,9 @@ pub struct IdentityConfig {
 }
 ```
 
-One implementation: `OidcDeviceFlow`. The refresh token goes to the keychain
+One implementation: `OidcDeviceFlow`. `identity.scopes` replaces the default list
+wholesale. `offline_access` is sent only if the IdP's `scopes_supported` is absent or
+lists it, since Google and some Keycloak setups answer `invalid_scope` otherwise. The refresh token goes to the keychain
 (`keyring` crate, service `warden`, account `<issuer>|<client_id>`). The ID token is
 held in memory only. `warden run` calls `current()`, which refreshes silently; if
 the refresh fails the launch stops with "run `warden login`".
