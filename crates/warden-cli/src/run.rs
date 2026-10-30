@@ -891,12 +891,20 @@ mod tests {
 
     #[test]
     fn norm_resolves_ancestors_of_missing_paths() {
+        // expected values in the same comparison form norm() returns
+        let form = |p: PathBuf| {
+            if cfg!(windows) {
+                windows_form(&p.to_string_lossy())
+            } else {
+                p
+            }
+        };
         let dir = tempfile::tempdir().unwrap();
         let real = std::fs::canonicalize(dir.path()).unwrap();
         // missing tail under a (possibly symlinked, e.g. macOS /var) tempdir
         assert_eq!(
             norm(&dir.path().join("new/sub")),
-            real.join("new").join("sub")
+            form(real.join("new").join("sub"))
         );
         #[cfg(unix)]
         {
@@ -907,7 +915,7 @@ mod tests {
         let cwd = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
         assert_eq!(
             norm(Path::new("warden-missing/x")),
-            cwd.join("warden-missing").join("x")
+            form(cwd.join("warden-missing").join("x"))
         );
     }
 
