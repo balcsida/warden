@@ -320,3 +320,53 @@ fn workspace_containing_warden_dirs_refused() {
         );
     }
 }
+
+#[test]
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), ignore)]
+fn git_dir_cannot_be_swapped() {
+    let root = tempfile::tempdir().unwrap();
+    let (config, data) = fixture(root.path(), 1);
+    let ws = root.path().join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    match Command::new("git").arg("init").arg("-q").arg(&ws).status() {
+        Ok(s) if s.success() => {}
+        _ => {
+            eprintln!("skipping: git not available");
+            return;
+        }
+    }
+    let script = r#"
+if mv .git .git.old 2>/dev/null; then echo rename=ok; else echo rename=denied; fi
+mkdir -p .gitnew/hooks
+echo '#!/bin/sh' > .gitnew/hooks/pre-commit
+if mv .gitnew .git 2>/dev/null && [ -f .git/hooks/pre-commit ]; then echo swap=ok; else echo swap=denied; fi
+if echo x > .git/warden-probe; then echo write=ok; else echo write=denied; fi
+if git -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m x; then echo commit=ok; else echo commit=failed; fi
+"#;
+    let out = Command::new(env!("CARGO_BIN_EXE_warden"))
+        .current_dir(&ws)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", root.path())
+        .env("WARDEN_CONFIG", &config)
+        .env("WARDEN_TRUSTED_KEYS", config.join("trusted-keys"))
+        .env("WARDEN_DATA", &data)
+        .env("WARDEN_AUDIT", "none")
+        .env("WARDEN_STATIC_KEY_GW", "sk-test")
+        .env(
+            "WARDEN_DEV_IDENTITY",
+            r#"{"subject":"tester","groups":["engineering"]}"#,
+        )
+        .args(["run", "shell", "--", script])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let msg = format!("{stdout}\n{stderr}");
+    assert!(stdout.contains("rename=denied"), "{msg}");
+    assert!(stdout.contains("swap=denied"), "{msg}");
+    assert!(stdout.contains("write=ok"), "{msg}");
+    assert!(stdout.contains("commit=ok"), "{msg}");
+    assert!(!ws.join(".git/hooks/pre-commit").exists(), "{msg}");
+    assert!(!ws.join(".git.old").exists(), "{msg}");
+}

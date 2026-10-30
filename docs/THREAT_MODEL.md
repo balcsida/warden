@@ -87,7 +87,11 @@ keychain is not a file on macOS but `~/Library/Keychains` is denied anyway).
   roots for exactly this reason; warden does the same by default
   (`defaults.protect_git_internals = true`) and the harness's own `git commit` still
   works because git writes objects and refs, not hooks. A harness that must edit
-  hooks needs policy to turn this off.
+  hooks needs policy to turn this off. The `.git` directory itself cannot be renamed
+  or replaced either (so `mv .git .git.old` plus a planted hook fails), but a `.git`
+  created during the run, and `.git` files (worktrees) pointing elsewhere, are not
+  covered. Launches whose writable root contains warden's config or data dir are
+  refused, so the harness cannot rewrite adapters or the policy bundle.
 - Does **not** hold against reading secrets that are *not* on the deny list.
   The default list is a start, not a census; orgs should extend it (browser
   profiles, password-manager caches, other repos). Readable home is a deliberate

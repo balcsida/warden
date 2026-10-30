@@ -37,8 +37,11 @@ pub fn profile(spec: &SandboxSpec) -> (String, Vec<(String, PathBuf)>) {
             params.push((hk.clone(), hooks.join("hooks")));
             let ck = format!("WRITABLE_{i}_GITCFG");
             params.push((ck.clone(), hooks.join("config")));
+            let gk = format!("WRITABLE_{i}_GITDIR");
+            params.push((gk.clone(), hooks.clone()));
+            // the literal `.git` entry too, so it cannot be renamed away and replaced
             write_parts.push(format!(
-                "(require-all (subpath (param \"{key}\")) (require-not (subpath (param \"{hk}\"))) (require-not (literal (param \"{ck}\"))))"
+                "(require-all (subpath (param \"{key}\")) (require-not (subpath (param \"{hk}\"))) (require-not (literal (param \"{ck}\"))) (require-not (literal (param \"{gk}\"))))"
             ));
         } else {
             write_parts.push(format!("(subpath (param \"{key}\"))"));
@@ -159,6 +162,7 @@ mod tests {
         assert!(p.contains("(deny default)"));
         assert!(p.contains("(allow file-read*)"));
         assert!(p.contains("(require-not (subpath (param \"WRITABLE_0_GIT\")))"));
+        assert!(p.contains("(require-not (literal (param \"WRITABLE_0_GITDIR\")))"));
         assert!(p.contains("(deny file-read* file-write* (subpath (param \"DENY_0\"))"));
         assert!(p.contains("(allow network-outbound (remote ip \"localhost:4321\"))"));
         assert!(
@@ -170,7 +174,7 @@ mod tests {
                 .iter()
                 .filter(|(k, _)| k.starts_with("WRITABLE_0"))
                 .count(),
-            3
+            4
         );
     }
 

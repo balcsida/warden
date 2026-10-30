@@ -200,6 +200,14 @@ pub trait Sandbox {
 }
 ```
 
+`warden run` refuses to launch (exit 77) if any `read_write` root equals or contains
+warden's config or data dir, since the harness could otherwise rewrite adapters and the
+policy bundle; the harness homes under the data dir are unaffected. Inside a writable
+root, the `.git` directory is itself immovable (Seatbelt denies writes to the literal
+path; bwrap binds it onto itself so rename/rmdir fail with EBUSY) while ordinary writes
+in it still work. A `.git` created during the run, and `.git` files (worktrees) pointing
+elsewhere, are not covered.
+
 The sandboxed child **inherits warden's stdio**. There is no PTY in warden. The
 harness gets the real terminal, so resize (SIGWINCH goes to the foreground process
 group), raw mode, mouse, colour and exit codes all work with zero code. Warden only
@@ -866,6 +874,8 @@ Deviations from the design above, all deliberate:
 - **ID token is cached in the OS keychain**, not memory only. Otherwise every
   `warden run` would hit the IdP; the keychain is the user's own encrypted store.
   The cached token is still signature-verified on every use.
+- **`.git` is immovable, warden's own dirs are off limits**: see §2.3. Both are
+  checked at launch, not while the harness runs.
 - **Reads are allowed everywhere except the deny list** (Seatbelt `(allow
   file-read*)` minus `deny` paths; bwrap `--ro-bind / /` with `--tmpfs` over deny
   paths). `readPath` decisions therefore only matter for adapter `[[fs]] ro`

@@ -60,6 +60,8 @@ pub fn bwrap_args(
         a.extend(["--bind".into(), rw.clone().into(), rw.clone().into()]);
         let git = rw.join(".git");
         if git.is_dir() {
+            // a mount point cannot be renamed or removed (EBUSY); writes inside still work
+            a.extend(["--bind".into(), git.clone().into(), git.clone().into()]);
             for sub in ["hooks", "config"] {
                 let p = git.join(sub);
                 if p.exists() {
@@ -415,6 +417,11 @@ mod tests {
             .collect();
         assert!(a.contains(&"--unshare-net".to_string()));
         assert!(!a.contains(&"--new-session".to_string()));
+        let git = ws.join(".git").display().to_string();
+        assert!(
+            a.windows(3)
+                .any(|w| w[0] == "--bind" && w[1] == git && w[2] == git)
+        );
         let hooks = ws.join(".git/hooks").display().to_string();
         assert!(a.windows(3).any(|w| w[0] == "--ro-bind" && w[1] == hooks));
         assert!(a.windows(2).any(|w| w[0] == "--tmpfs"));
