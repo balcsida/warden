@@ -81,6 +81,8 @@ struct Env {
     ws: PathBuf,
     outside: PathBuf,
     home: PathBuf,
+    /// TEMP and TMP of the launched warden, so its per-launch dir is easy to find.
+    temp: PathBuf,
 }
 
 impl Env {
@@ -94,6 +96,8 @@ impl Env {
         std::fs::create_dir_all(&outside).unwrap();
         let home = root.path().join("home");
         std::fs::create_dir_all(&home).unwrap();
+        let temp = root.path().join("temp");
+        std::fs::create_dir_all(&temp).unwrap();
         Self {
             _root: root,
             config,
@@ -101,6 +105,7 @@ impl Env {
             ws,
             outside,
             home,
+            temp,
         }
     }
 
@@ -108,20 +113,14 @@ impl Env {
     fn command(&self, harness: &str, args: &[&str]) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_warden"));
         c.current_dir(&self.ws).env_clear();
-        for k in [
-            "SystemRoot",
-            "windir",
-            "PATH",
-            "PATHEXT",
-            "COMSPEC",
-            "TEMP",
-            "TMP",
-        ] {
+        for k in ["SystemRoot", "windir", "PATH", "PATHEXT", "COMSPEC"] {
             if let Some(v) = std::env::var_os(k) {
                 c.env(k, v);
             }
         }
         c.env("USERPROFILE", &self.home)
+            .env("TEMP", &self.temp)
+            .env("TMP", &self.temp)
             .env("WARDEN_CONFIG", &self.config)
             .env("WARDEN_TRUSTED_KEYS", self.config.join("trusted-keys"))
             .env("WARDEN_DATA", &self.data)
@@ -343,6 +342,40 @@ fn harness_exit_code_propagates() {
     // exit codes wider than a byte survive
     let out = e.command("cmd", &["exit", "300"]).output().unwrap();
     assert_eq!(out.status.code(), Some(300), "{out:?}");
+}
+
+#[test]
+fn launch_leaves_no_temp_dir_behind() {
+    let e = Env::new(true);
+    e.probe_write(&e.ws.join("a.txt"));
+    let left: Vec<_> = std::fs::read_dir(&e.temp)
+        .unwrap()
+        .map(|d| d.unwrap().file_name())
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+#[test]
+fn refuses_a_workspace_containing_a_config_dir_that_does_not_exist_yet() {
+    let e = Env::new(true);
+    // `claude` resolves through PATH to a stand-in, since the adapters live in the missing config dir
+    let bin = e.ws.join("..").join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_warden"), bin.join("claude.exe")).unwrap();
+    let missing = e.ws.join("newcfg").join("warden");
+    let out = e
+        .command("claude-code", &[])
+        .env("WARDEN_CONFIG", &missing)
+        .env("WARDEN_POLICY", e.config.join("policy.bundle"))
+        .env("PATH", &bin)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(77), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("contains warden's own path"),
+        "{out:?}"
+    );
+    assert!(!missing.exists());
 }
 
 fn ping_pids(marker: &str) -> Vec<u32> {
