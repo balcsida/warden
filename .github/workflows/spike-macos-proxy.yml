@@ -13,12 +13,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: idle gap and delay
-        run: bash .github/spike/macos-proxy5.sh 12 20
+      - name: listener age
+        run: bash .github/spike/macos-proxy6.sh 40
       - name: summary
         if: always()
         run: |
-          cat spike-out/results5.txt || true
+          cat spike-out/summary6.txt || true
           echo ---- failures;  head -150 spike-out/warden-failures.log || true
           echo ---- sandbox log; grep -i 'deny\|network' spike-out/sandbox-stream.log | head -60 || true
       - uses: actions/upload-artifact@v4
