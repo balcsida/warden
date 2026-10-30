@@ -24,7 +24,7 @@ warden-policy.workspace = true
 warden-sandbox.workspace = true
 warden-provider.workspace = true
 warden-identity.workspace = true
-warden-audit = { workspace = true, default-features = false }
+warden-audit.workspace = true
 anyhow.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 tracing.workspace = true
