@@ -6,8 +6,9 @@ use std::io;
 use std::os::windows::ffi::OsStrExt;
 
 /// Appends `arg` quoted so the MSVCRT/`CommandLineToArgvW` parser reads it back verbatim.
-fn quote_arg(arg: &[u16], out: &mut Vec<u16>) {
-    let plain = !arg.is_empty()
+fn quote_arg(arg: &[u16], force: bool, out: &mut Vec<u16>) {
+    let plain = !force
+        && !arg.is_empty()
         && !arg
             .iter()
             .any(|&c| matches!(c, 0x20 | 0x09 | 0x0a | 0x0b | 0x22));
@@ -69,7 +70,8 @@ pub fn command_line(argv: &[OsString]) -> io::Result<Vec<u16>> {
         if i > 0 {
             line.push(b' ' as u16);
         }
-        quote_arg(&wide, &mut line);
+        // cmd.exe splits an unquoted `&`, `|`, `<`, `>` or `^`, so quote every batch argument
+        quote_arg(&wide, is_batch && i > 0, &mut line);
     }
     line.push(0);
     Ok(line)
@@ -145,6 +147,15 @@ mod tests {
             // other targets keep the MSVCRT quoting
             assert!(command_line(&argv(&["x.exe", bad])).is_ok(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn batch_targets_quote_every_argument() {
+        assert_eq!(
+            line(&["x.cmd", "a&calc", "b|c", "d"]),
+            r#"x.cmd "a&calc" "b|c" "d""#
+        );
+        assert_eq!(line(&["x.exe", "a&calc"]), "x.exe a&calc");
     }
 
     #[test]
