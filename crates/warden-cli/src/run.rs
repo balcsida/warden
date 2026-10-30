@@ -641,6 +641,11 @@ fn launch(
         ),
     );
     env.insert("AI_AGENT_LAUNCHER".into(), "warden".into());
+    // The user's temp dir is not writable in the sandbox; use the per-launch one.
+    #[cfg(windows)]
+    for k in ["TEMP", "TMP"] {
+        env.insert(k.into(), tmp.path().display().to_string());
+    }
     let helper_in_use = plan.secret_env.is_none();
     if helper_in_use {
         env.insert(
@@ -770,7 +775,7 @@ fn launch(
     #[cfg(unix)]
     let code = warden_sandbox::exit_code(status);
     #[cfg(not(unix))]
-    let code = status.code().unwrap_or(1);
+    let code = status.code().filter(|c| (0..=255).contains(c)).unwrap_or(1);
     audit.emit(
         Event::new("harness.exit")
             .attr("harness", harness)
