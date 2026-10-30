@@ -203,7 +203,7 @@ pub trait Sandbox {
 The sandboxed child **inherits warden's stdio**. There is no PTY in warden. The
 harness gets the real terminal, so resize (SIGWINCH goes to the foreground process
 group), raw mode, mouse, colour and exit codes all work with zero code. Warden only
-forwards SIGINT/SIGTERM/SIGHUP to the child's process group and exits with the
+forwards SIGTERM/SIGHUP to the child (SIGINT reaches it from the tty) and exits with the
 child's status (or 128+signal). This is how codex's `sandbox-exec` and `bwrap`
 wrappers already run. `portable-pty` is a dev-dependency used by the conformance
 tests to drive the TUI, not by the product.
@@ -731,10 +731,10 @@ machine. Step 6 is the one network call and is bounded.
 9. **Spawn.** `Sandbox::spawn()` with inherited stdio. Record pid. Emit
    `harness.launch` audit event (harness, version, model, provider id, sandbox
    backend, workspace, hash of the policy bundle; never the credential).
-10. **Supervise.** Install handlers for SIGINT/SIGTERM/SIGHUP (forward to child's
-    process group) and SIGCHLD. Block in `wait()`. If the credential has
-    `expires_at` and the harness is still running 5 min before it, print one line to
-    stderr ("credential expires in 5 min; save your work"); re-issuing into a
+10. **Supervise.** Install handlers for SIGTERM/SIGHUP (forward to the child; on
+    Linux through the helper's signal pipe) and ignore SIGINT, which the tty
+    delivers. Block in `wait()`. If the credential has `expires_at` and the harness
+    is still running 5 min before it, print one line to stderr ("credential expires in 5 min; save your work"); re-issuing into a
     running process is not possible with env-var injection (see Q4).
 11. **Exit.** `Provider::revoke()` best-effort (2s timeout; 8s through mint-serve, which makes two
     LiteLLM calls of up to 3s each). Flush audit (bounded,

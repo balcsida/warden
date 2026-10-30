@@ -626,6 +626,9 @@ fn launch(
     let mut child = sandbox
         .spawn(&spec, &argv)
         .map_err(|e| Fail::new(EX_UNAVAILABLE, e))?;
+    // before anything slow (the audit sink), so an early SIGTERM is relayed, not fatal
+    #[cfg(unix)]
+    install_signal_forwarding(child.pid, child.signal_fd);
     audit.emit(
         Event::new("harness.launch")
             .attr("harness", harness)
@@ -641,8 +644,6 @@ fn launch(
     );
 
     // 10. supervise
-    #[cfg(unix)]
-    install_signal_forwarding(child.pid, child.signal_fd);
     let status = sandbox.wait(&mut child).map_err(|e| Fail::new(1, e))?;
 
     // 11. exit

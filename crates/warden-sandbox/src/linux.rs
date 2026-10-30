@@ -136,16 +136,21 @@ impl Sandbox for LinuxSandbox {
             libc::signal(libc::SIGQUIT, libc::SIG_IGN);
         }
         // bwrap kills its child without forwarding signals, so warden writes signal
-        // numbers to this pipe and the helper delivers them to the harness. The read
-        // end is inherited through bwrap (no CLOEXEC); the write end stays ours.
+        // numbers to this pipe and the helper delivers them to the harness. Both ends
+        // start CLOEXEC (no window for another spawn to inherit them); only the read
+        // end is then made inheritable for bwrap. The write end is non-blocking so the
+        // signal handler can never block on a full pipe.
         let mut fds = [0; 2];
-        // SAFETY: pipe(2) fills the two-element array; fcntl on the fd we just made.
+        // SAFETY: pipe2(2) fills the two-element array; fcntl on the fds we just made.
         let rc = unsafe {
-            let rc = libc::pipe(fds.as_mut_ptr());
-            if rc == 0 {
-                libc::fcntl(fds[1], libc::F_SETFD, libc::FD_CLOEXEC);
+            if libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) != 0
+                || libc::fcntl(fds[0], libc::F_SETFD, 0) != 0
+                || libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK) != 0
+            {
+                -1
+            } else {
+                0
             }
-            rc
         };
         if rc != 0 {
             return Err(std::io::Error::last_os_error().into());
@@ -218,9 +223,15 @@ pub fn run_helper(args: &[OsString]) -> ! {
         wait_for_port(proxy_port);
     }
     if let Some(fd) = signal_fd {
-        // Keep it out of the harness, which would otherwise steal the bytes.
+        // Keep it out of the harness, which would otherwise steal the bytes. Failing
+        // here means bwrap did not pass it through, so signals would be lost silently.
         // SAFETY: fcntl on the fd bwrap passed us.
-        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+            die(&format!(
+                "signal fd {fd} not inherited: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
     }
     if let Err(e) = harden() {
         die(&format!("sandbox hardening failed: {e}"));
