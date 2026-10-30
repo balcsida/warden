@@ -222,7 +222,7 @@ mod tests {
         for_roots(&data, &[keep.clone(), gone.clone()]).unwrap();
 
         std::fs::remove_dir(&gone).unwrap();
-        for_roots(&data, &[keep.clone()]).unwrap();
+        for_roots(&data, std::slice::from_ref(&keep)).unwrap();
         let json: CapSids =
             serde_json::from_slice(&std::fs::read(data.join(FILE)).unwrap()).unwrap();
         let keys: Vec<_> = json.writable_root_by_path.keys().collect();

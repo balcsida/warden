@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn env_values_with_nul_are_rejected() {
-        let env = BTreeMap::from([("A".to_string(), "1\02".to_string())]);
+        let env = BTreeMap::from([("A".to_string(), "1\x002".to_string())]);
         assert!(env_block(&env).is_err());
     }
 
