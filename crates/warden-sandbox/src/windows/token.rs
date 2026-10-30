@@ -16,47 +16,54 @@ use windows_sys::Win32::Security::{
     GetLengthSid, GetTokenInformation, LUA_TOKEN, LookupPrivilegeValueW, SE_PRIVILEGE_ENABLED,
     SID_AND_ATTRIBUTES, SetTokenInformation, TOKEN_ADJUST_DEFAULT, TOKEN_ADJUST_PRIVILEGES,
     TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DEFAULT_DACL, TOKEN_DUPLICATE,
-    TOKEN_GROUPS, TOKEN_PRIVILEGES, TOKEN_QUERY, TokenDefaultDacl, TokenGroups, WRITE_RESTRICTED,
-    WinWorldSid,
+    TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER,
+    TokenDefaultDacl, TokenGroups, TokenUser, WRITE_RESTRICTED, WinWorldSid,
 };
 use windows_sys::Win32::Storage::FileSystem::READ_CONTROL;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-use super::cap::Sid;
+use super::cap::{Sid, random_sid};
 use super::{check, wide};
 
 const GENERIC_ALL: u32 = 0x1000_0000;
 const SE_GROUP_LOGON_ID: u32 = 0xC000_0000;
 
-fn logon_sid(token: HANDLE) -> io::Result<Vec<u8>> {
+/// A token information buffer; u64 backing keeps its header aligned.
+fn token_info(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> io::Result<Vec<u64>> {
     let mut needed = 0;
     // SAFETY: size query with a null buffer.
-    unsafe { GetTokenInformation(token, TokenGroups, std::ptr::null_mut(), 0, &mut needed) };
-    // u64 backing keeps the TOKEN_GROUPS header aligned
+    unsafe { GetTokenInformation(token, class, std::ptr::null_mut(), 0, &mut needed) };
     let mut buf = vec![0u64; (needed as usize).div_ceil(8).max(1)];
     // SAFETY: `buf` holds at least `needed` bytes.
-    if unsafe {
-        GetTokenInformation(
-            token,
-            TokenGroups,
-            buf.as_mut_ptr().cast(),
-            needed,
-            &mut needed,
-        )
-    } == 0
+    if unsafe { GetTokenInformation(token, class, buf.as_mut_ptr().cast(), needed, &mut needed) }
+        == 0
     {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: the buffer now holds a TOKEN_GROUPS whose SID pointers point inside it.
+    Ok(buf)
+}
+
+/// # Safety
+/// `sid` is a valid SID.
+unsafe fn sid_bytes(sid: *mut c_void) -> Vec<u8> {
+    unsafe { std::slice::from_raw_parts(sid as *const u8, GetLengthSid(sid) as usize).to_vec() }
+}
+
+fn user_sid(token: HANDLE) -> io::Result<Vec<u8>> {
+    let buf = token_info(token, TokenUser)?;
+    // SAFETY: the buffer holds a TOKEN_USER whose SID pointer points inside it.
+    Ok(unsafe { sid_bytes((*(buf.as_ptr() as *const TOKEN_USER)).User.Sid) })
+}
+
+fn logon_sid(token: HANDLE) -> io::Result<Vec<u8>> {
+    let buf = token_info(token, TokenGroups)?;
+    // SAFETY: the buffer holds a TOKEN_GROUPS whose SID pointers point inside it.
     unsafe {
         let groups = &*(buf.as_ptr() as *const TOKEN_GROUPS);
         std::slice::from_raw_parts(groups.Groups.as_ptr(), groups.GroupCount as usize)
             .iter()
             .find(|g| g.Attributes & SE_GROUP_LOGON_ID == SE_GROUP_LOGON_ID)
-            .map(|g| {
-                std::slice::from_raw_parts(g.Sid as *const u8, GetLengthSid(g.Sid) as usize)
-                    .to_vec()
-            })
+            .map(|g| sid_bytes(g.Sid))
             .ok_or_else(|| io::Error::other("no logon SID on the token"))
     }
 }
@@ -79,30 +86,34 @@ fn everyone_sid() -> io::Result<Vec<u8>> {
     Ok(buf)
 }
 
-/// Confine the token's default DACL to its own logon session, so other launches'
-/// processes cannot open this one. OWNER RIGHTS suppresses the owner's implicit WRITE_DAC.
-fn set_default_dacl(token: HANDLE, logon: *mut c_void) -> io::Result<()> {
+/// Objects the child creates (including its process object) get this DACL. Write
+/// access needs the per-launch SID, which only this launch's restricting list holds,
+/// so another launch's children (same user, same logon session) cannot open them for
+/// write. OWNER RIGHTS suppresses the owner's implicit WRITE_DAC.
+fn set_default_dacl(token: HANDLE, user: *mut c_void, launch: *mut c_void) -> io::Result<()> {
     let owner_rights = Sid::parse("S-1-3-4")?;
-    let entries =
-        [(logon, GENERIC_ALL), (owner_rights.as_ptr(), READ_CONTROL)].map(|(sid, mask)| {
-            EXPLICIT_ACCESS_W {
-                grfAccessPermissions: mask,
-                grfAccessMode: GRANT_ACCESS,
-                grfInheritance: 0,
-                Trustee: TRUSTEE_W {
-                    pMultipleTrustee: std::ptr::null_mut(),
-                    MultipleTrusteeOperation: 0,
-                    TrusteeForm: TRUSTEE_IS_SID,
-                    TrusteeType: TRUSTEE_IS_UNKNOWN,
-                    ptstrName: sid.cast(),
-                },
-            }
-        });
+    let entries = [
+        (user, GENERIC_ALL),
+        (launch, GENERIC_ALL),
+        (owner_rights.as_ptr(), READ_CONTROL),
+    ]
+    .map(|(sid, mask)| EXPLICIT_ACCESS_W {
+        grfAccessPermissions: mask,
+        grfAccessMode: GRANT_ACCESS,
+        grfInheritance: 0,
+        Trustee: TRUSTEE_W {
+            pMultipleTrustee: std::ptr::null_mut(),
+            MultipleTrusteeOperation: 0,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_UNKNOWN,
+            ptstrName: sid.cast(),
+        },
+    });
     let mut dacl: *mut ACL = std::ptr::null_mut();
     // SAFETY: `entries` reference SIDs that outlive the calls; `dacl` is freed below.
     unsafe {
         check(SetEntriesInAclW(
-            2,
+            3,
             entries.as_ptr(),
             std::ptr::null(),
             &mut dacl,
@@ -156,7 +167,7 @@ fn enable_change_notify(token: HANDLE) -> io::Result<()> {
 }
 
 /// A restricted copy of this process's token whose write access is limited to
-/// what the `caps` SIDs (plus logon SID and Everyone) are granted.
+/// what the `caps` SIDs (plus the logon SID, Everyone and a per-launch SID) are granted.
 pub fn restricted(caps: &[&Sid]) -> io::Result<OwnedHandle> {
     let mut base: HANDLE = std::ptr::null_mut();
     let access = TOKEN_DUPLICATE
@@ -175,12 +186,18 @@ pub fn restricted(caps: &[&Sid]) -> io::Result<OwnedHandle> {
     use std::os::windows::io::AsRawHandle;
     let base_raw = base.as_raw_handle();
 
+    let mut user = user_sid(base_raw)?;
     let mut logon = logon_sid(base_raw)?;
     let mut everyone = everyone_sid()?;
+    let launch = Sid::parse(&random_sid()?)?;
     let mut restricting: Vec<SID_AND_ATTRIBUTES> = caps
         .iter()
         .map(|c| c.as_ptr())
-        .chain([logon.as_mut_ptr().cast(), everyone.as_mut_ptr().cast()])
+        .chain([
+            logon.as_mut_ptr().cast(),
+            everyone.as_mut_ptr().cast(),
+            launch.as_ptr(),
+        ])
         .map(|sid| SID_AND_ATTRIBUTES {
             Sid: sid,
             Attributes: 0,
@@ -206,7 +223,11 @@ pub fn restricted(caps: &[&Sid]) -> io::Result<OwnedHandle> {
         }
         OwnedHandle::from_raw_handle(new)
     };
-    set_default_dacl(token.as_raw_handle(), logon.as_mut_ptr().cast())?;
+    set_default_dacl(
+        token.as_raw_handle(),
+        user.as_mut_ptr().cast(),
+        launch.as_ptr(),
+    )?;
     enable_change_notify(token.as_raw_handle())?;
     Ok(token)
 }

@@ -65,7 +65,7 @@ pub fn canonical(p: &Path) -> PathBuf {
     }
 }
 
-fn random_sid() -> io::Result<String> {
+pub fn random_sid() -> io::Result<String> {
     let mut b = [0u8; 16];
     // SAFETY: `b` is a valid 16-byte buffer; the flag selects the system RNG.
     let status = unsafe {

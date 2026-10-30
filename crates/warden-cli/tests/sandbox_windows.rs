@@ -220,7 +220,7 @@ fn git_dir_cannot_be_renamed_or_replaced_but_stays_writable() {
         .command("cmd", &["ren", ".git", ".git.old"])
         .output()
         .unwrap();
-    assert!(!out.status.success(), "{out:?}");
+    assert!(!out.status.success(), "{out:?}\n{}", icacls(&git));
     assert!(git.join("hooks").is_dir());
     assert!(!e.ws.join(".git.old").exists());
 
@@ -240,6 +240,23 @@ fn git_dir_cannot_be_renamed_or_replaced_but_stays_writable() {
     let (stdout, stderr) = e.probe_write(&probe);
     assert!(stdout.contains("write=ok"), "{stdout}\n{stderr}");
     assert!(probe.exists());
+}
+
+#[test]
+fn files_outside_the_roots_cannot_be_deleted_or_renamed() {
+    let e = Env::new(true);
+    let victim = e.outside.join("victim.txt");
+    std::fs::write(&victim, "keep").unwrap();
+    let v = victim.to_str().unwrap();
+    let moved = e.outside.join("moved.txt");
+    for args in [
+        vec!["del", "/f", "/q", v],
+        vec!["ren", v, "moved.txt"],
+        vec!["rd", "/s", "/q", e.outside.to_str().unwrap()],
+    ] {
+        let out = e.command("cmd", &args).output().unwrap();
+        assert!(victim.exists() && !moved.exists(), "{args:?}: {out:?}");
+    }
 }
 
 #[test]
