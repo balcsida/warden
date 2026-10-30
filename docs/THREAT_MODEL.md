@@ -70,6 +70,11 @@ SOCKS5 to allowlisted hostnames only.
 - Linux without user namespaces: `bwrap --unshare-net` is unavailable; warden
   refuses unless the bundle sets `sandbox.allow_degraded`, in which case only
   seccomp (deny non-loopback `connect`) remains. Document this per fleet.
+- **Windows (phase A) does not hold for C1 at all.** A restricted token cannot block
+  sockets, so the harness can connect anywhere; the proxy variables are advisory.
+  `warden run` refuses on Windows unless the bundle sets
+  `defaults.sandbox_allow_degraded`, and then prints a warning. Phase B (a sandbox
+  user plus firewall rules scoped to it, needing admin once) is meant to close this.
 
 ### C2 Filesystem sandbox
 
@@ -103,6 +108,15 @@ keychain is not a file on macOS but `~/Library/Keychains` is denied anyway).
   own sandbox use. If Apple removes it, the macOS backend must move to an
   `Endpoint Security`-free alternative (likely a helper using the same
   `sandbox_init` API, or Apple's Containerization). Tracked as a platform risk.
+- Windows (phase A): only the write limit holds. A restricted token (`WRITE_RESTRICTED`,
+  capability SIDs per writable root) stops writes outside the roots, and `.git\hooks`
+  and `.git\config` get deny-write ACEs if they exist at launch. **Deny-read is not
+  enforced**: the child runs as the developer and can read `~/.ssh` and the rest.
+  Writes into a folder where Everyone, the logon SID or a restricting SID already
+  has write access also succeed (codex documents the same). The ACL grants persist
+  after the run on purpose, since descendants may outlive warden; the process tree
+  itself is killed with warden (job object). Phase B adds deny-read through a
+  separate sandbox user.
 - `TMPDIR` and `/tmp` are writable; a tool can stage data there, but C1 keeps it
   on the machine.
 
@@ -226,4 +240,5 @@ this. The controls that do:
 - Preventing a developer with admin rights from running software without warden.
 - Content inspection of prompts or completions (that belongs at the gateway).
 - Anti-tamper of the `warden` binary itself (code signing and MDM do that).
-- Windows sandboxing in milestone 1; `warden run` refuses on Windows.
+- Windows network egress and deny-read enforcement before phase B; until then
+  `warden run` on Windows needs `defaults.sandbox_allow_degraded`.

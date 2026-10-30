@@ -30,7 +30,7 @@ crates/
   warden-identity/   OIDC device flow -> Identity
   warden-provider/   StaticProvider, LiteLlmProvider
   warden-sandbox/    SandboxSpec compiler, macOS Seatbelt, Linux bwrap/Landlock/seccomp,
-                     Windows stub, egress proxy
+                     Windows restricted-token backend, egress proxy
   warden-policy/     bundle format, ed25519 verification, Cedar evaluation
   warden-audit/      OTLP exporter (feature-gated; `none` sink always available)
 adapters/            claude-code.toml codex.toml opencode.toml pi.toml  (source of truth, embedded at build)
@@ -246,10 +246,30 @@ Backends in milestone 1:
   Landlock+seccomp only (no mount namespace, no net namespace) when user namespaces
   are disabled, and `preflight` then downgrades with an explicit warning only if
   policy sets `sandbox.allow_degraded = true`; otherwise refuses.
-- `WindowsSandbox`: `preflight` returns `Err(Unsupported("Windows sandboxing lands
-  in milestone 2; see docs/THREAT_MODEL.md"))`. Milestone 2 will port codex's
-  `windows-sandbox-rs` approach (restricted token + ACL grants, elevated one-time
-  setup).
+- `WindowsSandbox` (phase A, `warden-sandbox/src/windows/`, derived from codex's
+  `windows-sandbox-rs`, see `THIRD_PARTY_NOTICES.md`). **Enforced**: writes are limited
+  to the `read_write` roots, and the harness's whole process tree dies with warden.
+  **Not enforced**: network egress and `deny_read` (a restricted token cannot block
+  sockets or reads). So `preflight` refuses unless `SandboxSpec.sandbox_allow_degraded`
+  (`defaults.sandbox_allow_degraded`) is set, and then prints one warning saying so.
+  How it works: `CreateRestrictedToken(DISABLE_MAX_PRIVILEGE | LUA_TOKEN |
+  WRITE_RESTRICTED)` with restricting SIDs = one random capability SID per canonical
+  writable root + the logon SID + Everyone (a write needs an allow ACE for one of
+  them; reads are unaffected). Capability SIDs persist in
+  `<data dir>\cap_sids.json`, so the ACL grants (generic read/write/execute/delete,
+  no `WRITE_DAC`, no `FILE_DELETE_CHILD`, inherited) are made once per root and
+  repeated launches leave the ACLs unchanged. `.git\hooks` and `.git\config` get a
+  deny-write ACE for the capability SIDs of the roots that contain them, if they
+  exist at launch (a hooks directory created later is not covered). The child is
+  created with `CreateProcessAsUserW` inside a `KILL_ON_JOB_CLOSE` job (job-list
+  attribute, so it never runs outside the job), an explicit environment block, and only
+  the three std handles inherited, so it owns the console like on Unix. `signal`:
+  Terminate/Hangup terminate the job; Interrupt sends Ctrl-C to the console. warden
+  itself installs a console control handler (not inherited by the child, unlike
+  `SetConsoleCtrlHandler(NULL, TRUE)`) so Ctrl-C reaches the harness first. Phase B
+  (elevated one-time setup: a sandbox user, firewall rules scoped to it, a runner
+  process, deny-read ACLs) would close the network and read gaps; it needs admin and
+  is not started. The credential socket is Unix-only, so Windows uses the env key.
 - `NoSandbox`: only selectable when the policy bundle grants
   `Warden::Action::"launchUnsandboxed"`; prints a red banner. Exists so a
   group can be exempted explicitly rather than by patching the binary.
@@ -859,8 +879,8 @@ Q8 warden-owned harness homes. Q9 refuse without user namespaces unless
 - **Q6 cargo-dist.** axodotdev's funding ended and maintenance has been sporadic.
   It still works; the alternative is a hand-written release workflow with
   `cross`. Proceed with cargo-dist and revisit if a toolchain bump breaks it?
-- **Q7 Windows reads.** Milestone 2 only. Should `warden run` on Windows refuse
-  (current plan) or launch with provider injection and the proxy but no sandbox
+- **Q7 Windows reads.** Phase A refuses unless the bundle opts into the degraded
+  mode (no network or deny-read enforcement); phase B closes them. Should it instead launch with provider injection and the proxy but no sandbox
   when policy permits `launchUnsandboxed`? The latter gives Windows users the
   routing benefit today.
 - **Q8 Harness home vs real home.** Giving each harness a warden-owned home
@@ -932,6 +952,11 @@ Deviations from the design above, all deliberate:
   work through the proxy. obs-fold and bare LF in the head are refused with 400.
   Absolute-form, as first written, was 404'd by uvicorn (LiteLLM); CONNECT tunnels
   (and so `wss://`) are unaffected.
+
+- **Windows (phase A)**: see §2.3. `defaults.sandbox_allow_degraded` is the only way
+  to run there until the elevated mode exists; macOS and Linux ignore it today.
+  Child env names are matched case-insensitively and upper-cased on Windows
+  (`SystemRoot` is passed through), and `TEMP`/`TMP` point at the per-launch dir.
 
 - **Q10 Name.** `warden` is taken on crates.io by an unrelated crate. Binary name can
   stay `warden`; the crate names can be `warden-*` only if those are free (they

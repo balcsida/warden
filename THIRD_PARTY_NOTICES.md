@@ -13,5 +13,11 @@ The following files are derived from the `codex-rs` sandbox implementation:
 - `crates/warden-sandbox/profiles/seatbelt_network.sbpl` from `codex-rs/sandboxing/src/seatbelt_network_policy.sbpl`
 - The bubblewrap argument layout in `linux.rs` and the proxy bridge in `proxy.rs` (`crates/warden-sandbox/src/`)
   follow `codex-rs/linux-sandbox/src/{bwrap.rs,proxy_routing.rs}`.
+- The Windows backend in `crates/warden-sandbox/src/windows/`, rewritten on `windows-sys`
+  from `codex-rs/windows-sandbox-rs/src/{token.rs,cap.rs,acl.rs,process.rs,proc_thread_attr.rs}`
+  and the job object in `codex-rs/utils/pty/src/win/job.rs`, at commit
+  `55c099a142eb302188fee00ab9e9062f2db1c359`:
+  `token.rs` from `token.rs`, `cap.rs` from `cap.rs`, `acl.rs` from `acl.rs`,
+  `process.rs` from `process.rs`, `proc_thread_attr.rs` and `job.rs`.
 
 Used under the Apache License, Version 2.0; see `LICENSE`.

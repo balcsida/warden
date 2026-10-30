@@ -17,7 +17,10 @@ use, mint a short-lived gateway credential for you, start a local allowlisting
 egress proxy, and launch the harness inside an OS sandbox whose only way out is
 that proxy. The harness inherits your terminal, so interactive TUIs work unchanged.
 
-Status: milestone 1 (macOS and Linux). Windows refuses to run until milestone 2.
+Status: milestone 1 (macOS and Linux). Windows is phase A: the write limit and
+process-tree kill are enforced, network egress and deny-read paths are **not**, and
+`warden run` only starts when the bundle sets `defaults.sandbox_allow_degraded`.
+The elevated phase B (sandbox user and firewall rules) is still to come.
 Design: `docs/DESIGN.md`. Threat model: `docs/THREAT_MODEL.md`.
 
 ## What is enforced, and what is not
@@ -34,7 +37,7 @@ Warden is a client-side control. Be clear-eyed about what that means.
 - Network: no socket leaves the sandbox except to warden's proxy on loopback.
   The proxy allows CONNECT/SOCKS5 to allowlisted hostnames only. There is no
   DNS inside the sandbox. Linux uses a fresh network namespace; macOS uses
-  Seatbelt rules.
+  Seatbelt rules. **On Windows (phase A) network egress and the deny list are not enforced yet.**
 - Credentials: per-launch, per-user, TTL-bound, scoped to the allowed models.
   Never written to disk by warden. For Claude Code the key never enters the
   environment at all; the harness fetches it per request from a socket warden
