@@ -32,6 +32,7 @@ print(s.getsockname()[1]); sys.stdout.flush()
 if os.fork():
     os._exit(0)
 os.setsid()
+fd=os.open('/dev/null',os.O_RDWR); os.dup2(fd,1); os.dup2(fd,2)
 import signal; signal.alarm(30)
 while True:
     c,_=s.accept(); c.close()
