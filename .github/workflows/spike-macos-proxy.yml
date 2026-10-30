@@ -13,12 +13,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: full log around failures
-        run: bash .github/spike/macos-proxy8.sh 240
+      - name: concurrent shuffled
+        run: bash .github/spike/macos-proxy9.sh 100
       - name: summary
         if: always()
         run: |
-          cat spike-out/results8.txt || true
+          cat spike-out/summary9.txt || true
           echo ---- failures;  head -150 spike-out/warden-failures.log || true
           echo ---- sandbox log; grep -i 'deny\|network' spike-out/sandbox-stream.log | head -60 || true
       - uses: actions/upload-artifact@v4
