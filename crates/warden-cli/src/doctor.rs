@@ -69,7 +69,12 @@ pub fn run(cli: &Cli) -> Result<ExitCode, Fail> {
         .as_ref()
         .is_some_and(|v| v.bundle.defaults.sandbox_allow_degraded);
     match sb.preflight(&spec) {
-        Ok(()) => line(true, "sandbox", sb.name()),
+        Ok(()) => {
+            line(true, "sandbox", sb.name());
+            if let Some(w) = sb.degraded() {
+                println!("warn sandbox: {w}");
+            }
+        }
         Err(e) => {
             all_ok = false;
             line(false, "sandbox", e);
