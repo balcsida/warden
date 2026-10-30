@@ -205,7 +205,7 @@ fn sandbox_blocks_read_write_and_connect() {
 }
 
 #[test]
-#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), ignore)]
+#[cfg(unix)] // signals; Windows has none to forward
 fn sigterm_reaches_harness_handler() {
     use std::io::{BufRead, BufReader};
     use std::process::Stdio;
