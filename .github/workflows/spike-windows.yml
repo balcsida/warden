@@ -232,7 +232,7 @@ jobs:
             public static string AddBlock(string sddl, ushort allowedPort) {
               IntPtr h; uint r = FwpmEngineOpen0(null, 10, IntPtr.Zero, IntPtr.Zero, out h);
               if (r != 0) return "FwpmEngineOpen0 error 0x" + r.ToString("x");
-              var sd = new RawSecurityDescriptor(sddl).GetBinaryForm();
+              var rsd = new RawSecurityDescriptor(sddl); var sd = new byte[rsd.BinaryLength]; rsd.GetBinaryForm(sd, 0);
               IntPtr sdBuf = Marshal.AllocHGlobal(sd.Length); Marshal.Copy(sd, 0, sdBuf, sd.Length);
               IntPtr blob = Marshal.AllocHGlobal(16); Marshal.WriteInt32(blob, 0, sd.Length); Marshal.WriteInt64(blob, 8, sdBuf.ToInt64());
               IntPtr am = Marshal.AllocHGlobal(8); Marshal.WriteInt32(am, 0, unchecked((int)0x7F000000)); Marshal.WriteInt32(am, 4, unchecked((int)0xFF000000));
