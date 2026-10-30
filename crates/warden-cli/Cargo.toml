@@ -49,4 +49,4 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 reqwest.workspace = true
-base64 = "0.22"
+base64 = "0.23"

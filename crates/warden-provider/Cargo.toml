@@ -19,7 +19,7 @@ tracing.workspace = true
 secrecy.workspace = true
 url.workspace = true
 reqwest.workspace = true
-keyring = { version = "3", features = ["apple-native", "windows-native", "async-secret-service", "tokio", "crypto-rust"] }
+keyring = "4"
 
 [dev-dependencies]
 tiny_http = "0.12"

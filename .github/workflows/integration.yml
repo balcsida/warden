@@ -16,10 +16,10 @@ env:
 jobs:
   # warden's OTLP audit exporter against a real OpenTelemetry Collector.
   otlp:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install bubblewrap
@@ -57,14 +57,14 @@ jobs:
 
   # Real OSS LiteLLM (mock_response models, no upstream keys) behind `warden mint-serve`.
   litellm:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     env:
       WARDEN_IT_REQUIRED: "1"
       WARDEN_IT_LITELLM_URL: http://127.0.0.1:14000
       WARDEN_IT_LITELLM_MASTER_KEY: sk-it-master-0000
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install bubblewrap
@@ -92,13 +92,13 @@ jobs:
   # Real IdP: `warden login`, token refresh, `warden run` and
   # `warden mint-serve` against Dex (config in crates/warden-cli/tests/it/oidc).
   oidc:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     env:
       WARDEN_IT_REQUIRED: "1"
       WARDEN_IT_OIDC_ISSUER: http://127.0.0.1:5556/dex
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install bubblewrap and keyring
