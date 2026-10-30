@@ -259,7 +259,7 @@ Backends in milestone 1:
   cannot block sockets or reads). So `preflight` refuses unless
   `SandboxSpec.sandbox_allow_degraded` (`defaults.sandbox_allow_degraded`) is set, and
   then `Sandbox::degraded()` supplies the warning `warden run` prints and records as
-  `degraded=true` in the `harness.launch` audit event (`warden doctor` stays quiet).
+  `degraded=true` in the `harness.launch` audit event (`warden doctor` prints the same warning).
   How it works: `CreateRestrictedToken(DISABLE_MAX_PRIVILEGE | LUA_TOKEN |
   WRITE_RESTRICTED)` with restricting SIDs = one random capability SID per canonical
   writable root + the logon SID + Everyone + one random SID per launch (a write needs an
