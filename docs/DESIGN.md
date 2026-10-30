@@ -175,6 +175,9 @@ pub struct SandboxSpec {
     pub deny_read: Vec<PathBuf>,                 // e.g. ~/.ssh, ~/.aws, ~/.gnupg, warden's own state
     pub network: NetworkSpec,
     pub env: BTreeMap<String, String>,           // the complete child environment; nothing inherited implicitly
+    pub cwd: PathBuf,
+    pub data_dir: PathBuf,                       // warden's data dir, for state a backend persists (Windows capability SIDs)
+    pub sandbox_allow_degraded: bool,            // policy accepts a backend that cannot enforce everything
 }
 
 pub struct NetworkSpec {
@@ -193,6 +196,8 @@ pub trait Sandbox {
     /// Check the platform can enforce this spec (sandbox-exec present, bwrap/user-ns available, …).
     /// Returning Err stops the launch (fail closed). Also used by `warden doctor`.
     fn preflight(&self, spec: &SandboxSpec) -> Result<(), SandboxError>;
+    /// A warning when this backend enforces less than the full policy (Windows phase A); default None.
+    fn degraded(&self) -> Option<&'static str> { None }
     /// Spawn `argv` with inherited stdio inside the sandbox. Does not wait.
     fn spawn(&self, spec: &SandboxSpec, argv: &[OsString]) -> Result<LaunchedChild, SandboxError>;
     fn wait(&self, child: &mut LaunchedChild) -> Result<ExitStatus, SandboxError>;
