@@ -7,20 +7,23 @@ mkdir -p "$OUT"
 cc -o "$OUT/client3" .github/spike/client3.c || exit 1
 : > "$OUT/results3.txt"
 for i in $(seq 1 "$N"); do
-  base=$(python3 - <<'PY'
+  read base lpid < <(python3 - <<'PY'
 import socket,os,sys,random
-b=random.randrange(50000,60000)&~0xfff|0x400  # random block, offset 0x400 inside it
-ls=[]
-for k in range(-300,300):
+while True:
+    b=random.randrange(49600,64000)
+    ls=[]
     try:
-        s=socket.socket(); s.bind(("127.0.0.1",b+k)); s.listen(64); ls.append(s)
-    except OSError: pass
-print(b); sys.stdout.flush()
+        for k in range(-300,300):
+            s=socket.socket(); s.bind(("127.0.0.1",b+k)); s.listen(64); ls.append(s)
+        break
+    except OSError:
+        for s in ls: s.close()
+print(b, os.getpid()); sys.stdout.flush()
 if os.fork():
     os._exit(0)
 os.setsid()
 fd=os.open('/dev/null',os.O_RDWR); os.dup2(fd,1); os.dup2(fd,2)
-import signal, select; signal.alarm(120)
+import signal, select; signal.alarm(60)
 while True:
     r,_,_=select.select(ls,[],[])
     for s in r:
