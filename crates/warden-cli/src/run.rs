@@ -287,6 +287,8 @@ pub fn probe_spec(tmp: &Path) -> SandboxSpec {
         },
         env: BTreeMap::new(),
         cwd: tmp.to_path_buf(),
+        data_dir: dirs::data_dir(),
+        sandbox_allow_degraded: false,
     }
 }
 
@@ -686,6 +688,8 @@ fn launch(
         },
         env: env.clone(),
         cwd: workspace.clone(),
+        data_dir: dirs::data_dir(),
+        sandbox_allow_degraded: bundle.defaults.sandbox_allow_degraded,
     };
 
     if dry_run {

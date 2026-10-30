@@ -64,7 +64,10 @@ pub fn run(cli: &Cli) -> Result<ExitCode, Fail> {
 
     let sb = warden_sandbox::native();
     let tmp = tempfile::tempdir()?;
-    let spec = run::probe_spec(tmp.path());
+    let mut spec = run::probe_spec(tmp.path());
+    spec.sandbox_allow_degraded = bundle
+        .as_ref()
+        .is_some_and(|v| v.bundle.defaults.sandbox_allow_degraded);
     match sb.preflight(&spec) {
         Ok(()) => line(true, "sandbox", sb.name()),
         Err(e) => {

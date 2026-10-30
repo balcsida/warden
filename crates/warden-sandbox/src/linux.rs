@@ -415,6 +415,8 @@ mod tests {
             },
             env: BTreeMap::new(),
             cwd: ws.clone(),
+            data_dir: dir.path().join("data"),
+            sandbox_allow_degraded: false,
         };
         let a: Vec<String> = bwrap_args(&spec, Path::new("/opt/warden"), 7, &["pi".into()])
             .iter()
@@ -465,6 +467,8 @@ mod tests {
             },
             env: BTreeMap::new(),
             cwd: ws.to_path_buf(),
+            data_dir: ws.join("data"),
+            sandbox_allow_degraded: false,
         };
         let ro_binds = |ws: &Path| -> Vec<String> {
             let a = bwrap_args(&spec_for(ws), Path::new("/opt/warden"), 7, &["pi".into()]);

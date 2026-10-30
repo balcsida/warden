@@ -193,6 +193,10 @@ pub struct SandboxSpec {
     /// The complete child environment. Nothing is inherited implicitly.
     pub env: BTreeMap<String, String>,
     pub cwd: PathBuf,
+    /// Warden's data directory, for state a backend persists (Windows capability SIDs).
+    pub data_dir: PathBuf,
+    /// Policy accepts a backend that cannot enforce every guarantee (`defaults.sandbox_allow_degraded`).
+    pub sandbox_allow_degraded: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

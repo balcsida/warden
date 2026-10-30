@@ -157,6 +157,8 @@ mod tests {
             },
             env: BTreeMap::new(),
             cwd: dir.join("ws"),
+            data_dir: dir.join("data"),
+            sandbox_allow_degraded: false,
         }
     }
 
