@@ -231,6 +231,9 @@ impl LaunchedChild {
             inner: Box::new(inner),
         }
     }
+    pub fn inner_ref<T: std::any::Any>(&self) -> Option<&T> {
+        self.inner.downcast_ref()
+    }
     pub fn inner_mut<T: std::any::Any>(&mut self) -> Option<&mut T> {
         self.inner.downcast_mut()
     }

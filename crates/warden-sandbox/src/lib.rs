@@ -20,12 +20,14 @@ pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod seatbelt;
 
+#[cfg(windows)]
+pub mod windows;
+
 pub mod unsandboxed;
 
 use warden_core::Sandbox;
 
-/// The native backend for this platform. On Windows this is a stub whose
-/// `preflight` refuses with a clear message (milestone 2).
+/// The native backend for this platform.
 pub fn native() -> Box<dyn Sandbox> {
     #[cfg(target_os = "macos")]
     {
@@ -35,7 +37,11 @@ pub fn native() -> Box<dyn Sandbox> {
     {
         Box::new(linux::LinuxSandbox::default())
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    {
+        Box::new(windows::WindowsSandbox)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         Box::new(unsandboxed::Unsupported)
     }
