@@ -47,7 +47,7 @@ Design under test (DESIGN §2.3/2.4 phase B): harness runs as a dedicated local 
 
 **Does not work**
 1. **Windows Firewall rules do not filter loopback.** Not only the per-user ones: an all-users block of TCP port 18081 did not stop a loopback connect either. Codex's `…_block_loopback_tcp` / `_udp` rules (`setup_provisioning/firewall.rs`, `LOOPBACK_REMOTE_ADDRESSES = "127.0.0.0/8,::/127"`) therefore appear to be ineffective on this machine; I found no comment in codex acknowledging a loopback exemption, and its WFP filter set (`wfp/filter_specs.rs`) covers ICMP, DNS 53/853 and SMB 445 but no loopback condition. I did not verify behaviour on client Windows 10/11, so this is "true on Server 2022", not "true everywhere". The "allow only the proxy on loopback" half of phase B cannot be built from `New-NetFirewallRule`.
-2. **DNS leaks through the DnsCache service.** Name resolution succeeds for the sandbox user; only direct UDP/53 is blocked. Without a proxy this does not give a channel (the follow-up TCP connect is blocked), but DNS queries are an exfiltration channel (and codex adds WFP 53/853 filters for the same reason, which would not stop DnsCache either since the query comes from another account).
+2. **DNS leaks through the DnsCache service.** Name resolution succeeds for the sandbox user; only direct UDP/53 is blocked. The follow-up TCP connect to the resolved address is blocked, but the queries themselves are a low-bandwidth exfiltration channel. (Inference, not tested: codex's WFP 53/853 filters would not stop this either, since the query comes from the DnsCache service's account, not the sandbox user's.)
 3. **No real terminal.** Not demonstrated; see open questions.
 
 **What we must do instead**
