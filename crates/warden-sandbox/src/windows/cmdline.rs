@@ -138,7 +138,7 @@ mod tests {
         let argv = |a: &[&str]| a.iter().map(OsString::from).collect::<Vec<_>>();
         assert_eq!(
             line(&["C:\\npm\\claude.CMD", "-p", "fix the bug"]),
-            r#"C:\npm\claude.CMD -p "fix the bug""#
+            r#"C:\npm\claude.CMD "-p" "fix the bug""#
         );
         for bad in ["say \"hi\"", "100%", "a\nb", "a\rb"] {
             for exe in ["x.cmd", "X.BAT"] {
