@@ -403,6 +403,8 @@ fn workspace_containing_trusted_keys_or_bundle_refused() {
 
 /// A refused launch must not leave the LiteLLM key it already minted alive.
 #[test]
+// env_clear() drops SystemRoot, without which Winsock cannot reach the mock server
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), ignore)]
 fn refused_launch_revokes_credential() {
     use std::sync::{Arc, Mutex};
     let (gateway, gateway_port) = listener();
