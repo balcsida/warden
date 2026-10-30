@@ -39,9 +39,9 @@ Warden is a client-side control. Be clear-eyed about what that means.
   DNS inside the sandbox. Linux uses a fresh network namespace; macOS uses
   Seatbelt rules. **On Windows (phase A) network egress and the deny list are not enforced yet.**
 - Credentials: per-launch, per-user, TTL-bound, scoped to the allowed models.
-  Never written to disk by warden. For Claude Code the key never enters the
-  environment at all; the harness fetches it per request from a socket warden
-  owns. (Pi would support the same through pi-provider-litellm, but that
+  Never written to disk by warden. For Claude Code on macOS and Linux the key never
+  enters the environment at all; the harness fetches it per request from a socket
+  warden owns (the socket is Unix-only, so on Windows the key is in the environment). (Pi would support the same through pi-provider-litellm, but that
   extension does not run key helpers at startup yet, so Pi gets the env var.)
 - Identity and policy: groups come from the IdP's signed token; the bundle is
   Ed25519-signed and validated against the Cedar schema; anything unverifiable

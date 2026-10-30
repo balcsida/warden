@@ -91,14 +91,14 @@ keychain is not a file on macOS but `~/Library/Keychains` is denied anyway).
   outside warden escapes the sandbox). Codex marks `.git` read-only inside writable
   roots for exactly this reason; warden does the same, always (there is no opt-out),
   and the harness's own `git commit` still works because git writes objects and refs,
-  not hooks. The `.git` directory itself cannot be renamed or replaced either (so
-  `mv .git .git.old` plus a planted hook fails), and a `.git` file (worktree or
-  submodule `gitdir:` pointer) is read-only so it cannot be repointed at a fake git
-  dir. Not covered: a `.git` created during the run, nested repos and submodules
-  (`<root>/sub/.git`, `.git/modules/*/{hooks,config}`) and a symlinked `.git`.
-  Launches whose writable root contains warden's config or data dir, the trusted-keys
-  file or the policy bundle are refused, so the harness cannot rewrite adapters, trust
-  its own signing key or swap the bundle.
+  not hooks. On macOS and Linux the `.git` directory itself cannot be renamed or
+  replaced either (so `mv .git .git.old` plus a planted hook fails), and a `.git` file
+  (worktree or submodule `gitdir:` pointer) is read-only so it cannot be repointed at
+  a fake git dir. Not covered: a `.git` created during the run, nested repos and
+  submodules (`<root>/sub/.git`, `.git/modules/*/{hooks,config}`) and a symlinked
+  `.git`. Launches whose writable root contains warden's config or data dir, the
+  trusted-keys file or the policy bundle are refused, so the harness cannot rewrite
+  adapters, trust its own signing key or swap the bundle.
 - Does **not** hold against reading secrets that are *not* on the deny list.
   The default list is a start, not a census; orgs should extend it (browser
   profiles, password-manager caches, other repos). Readable home is a deliberate
@@ -117,6 +117,25 @@ keychain is not a file on macOS but `~/Library/Keychains` is denied anyway).
   after the run on purpose, since descendants may outlive warden; the process tree
   itself is killed with warden (job object). Phase B adds deny-read through a
   separate sandbox user.
+  - `.git` itself also gets a non-inherited deny-DELETE ACE, so it cannot be renamed
+    away and copied back with a planted hook; writes inside it still work.
+  - **Console injection.** The child shares the user's console and desktop. The job
+    object blocks USER handles of other processes, desktop switching, global atoms and
+    system-parameter changes, but the child can still write to the console input
+    buffer (`WriteConsoleInput`), queueing keystrokes that the parent shell runs after
+    warden exits. That is code execution outside the roots, the Windows analogue of
+    TIOCSTI. It stays open until phase B's private desktop and ConPTY.
+  - **Keychain token.** DESIGN §9 caches the OIDC ID token in the OS keychain, and
+    deny-read is off on Windows, so the child (same user) can read it and mint
+    further gateway keys until it expires.
+  - **ACL side effects.** Grants and denies are written into the real ACLs of the
+    workspace and persist (see above), and the first grant on a large tree rewrites
+    every ACL below the root, which can take a long time. Later launches are fast.
+  - **Same-user processes.** A test asserts that the child cannot open warden or
+    another launch's process with `PROCESS_VM_WRITE`, `PROCESS_CREATE_THREAD` or
+    `PROCESS_DUP_HANDLE`.
+  - `.cmd`/`.bat` harnesses (npm shims) run through cmd.exe, which cannot be
+    quoted safely, so arguments containing `"`, `%` or a line break are refused.
 - `TMPDIR` and `/tmp` are writable; a tool can stage data there, but C1 keeps it
   on the machine.
 
