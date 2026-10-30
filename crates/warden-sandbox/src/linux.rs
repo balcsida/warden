@@ -62,12 +62,17 @@ pub fn bwrap_args(
         if git.is_dir() {
             // a mount point cannot be renamed or removed (EBUSY); writes inside still work
             a.extend(["--bind".into(), git.clone().into(), git.clone().into()]);
+            // git creates hooks/ itself; make it now (outside the sandbox) so it can be bound
+            let _ = std::fs::create_dir_all(git.join("hooks"));
             for sub in ["hooks", "config"] {
                 let p = git.join(sub);
                 if p.exists() {
                     a.extend(["--ro-bind".into(), p.clone().into(), p.into()]);
                 }
             }
+        } else if git.is_file() {
+            // worktree/submodule `gitdir:` pointer: read-only, so it cannot be repointed
+            a.extend(["--ro-bind".into(), git.clone().into(), git.into()]);
         }
     }
     for d in &spec.deny_read {
@@ -440,5 +445,43 @@ mod tests {
                 "pi"
             ]
         );
+    }
+
+    #[test]
+    fn git_hooks_created_and_git_file_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec_for = |ws: &Path| SandboxSpec {
+            workspace: ws.to_path_buf(),
+            read_only: vec![],
+            read_write: vec![ws.to_path_buf()],
+            deny_read: vec![],
+            network: NetworkSpec {
+                allow_hosts: vec![],
+                proxy: ProxyHandle::Unix {
+                    path: "/tmp/p.sock".into(),
+                    port: 3128,
+                },
+                allow_local_binding: false,
+            },
+            env: BTreeMap::new(),
+            cwd: ws.to_path_buf(),
+        };
+        let ro_binds = |ws: &Path| -> Vec<String> {
+            let a = bwrap_args(&spec_for(ws), Path::new("/opt/warden"), 7, &["pi".into()]);
+            a.windows(2)
+                .filter(|w| w[0] == "--ro-bind")
+                .map(|w| w[1].to_string_lossy().into())
+                .collect()
+        };
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let hooks = repo.join(".git/hooks").display().to_string();
+        assert!(ro_binds(&repo).contains(&hooks));
+        assert!(repo.join(".git/hooks").is_dir());
+
+        let wt = dir.path().join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join(".git"), "gitdir: /elsewhere\n").unwrap();
+        assert!(ro_binds(&wt).contains(&wt.join(".git").display().to_string()));
     }
 }
