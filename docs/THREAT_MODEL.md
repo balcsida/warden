@@ -114,8 +114,9 @@ keychain is not a file on macOS but `~/Library/Keychains` is denied anyway).
   Low integrity, with the roots labelled Low, stops writes outside the roots, and `.git\hooks`
   and `.git\config` get deny-write ACEs if they exist at launch. **Deny-read is not
   enforced**: the child runs as the developer and can read `~/.ssh` and the rest.
-  Writes into a folder where Everyone, the logon SID or a restricting SID already
-  has write access also succeed (codex documents the same). The ACL grants persist
+  Inside a Low-labelled root, writes to files where Everyone, the logon SID or a
+  restricting SID already has write access succeed; elsewhere the Low integrity level
+  rejects them. The ACL grants persist
   after the run on purpose, since descendants may outlive warden; the process tree
   itself is killed with warden (job object). Phase B adds deny-read through a
   separate sandbox user.
@@ -130,7 +131,13 @@ keychain is not a file on macOS but `~/Library/Keychains` is denied anyway).
     phase B (ignored test in `sandbox_windows.rs`).
   - **Labels persist.** The Low label stays on the workspace after the run, so any other
     Low-integrity process of the user can write there. The child itself cannot write HKCU
-    or most of `%LOCALAPPDATA%`, which breaks some harness tooling.
+    or most of `%LOCALAPPDATA%`, which breaks some harness tooling. `label_root` replaces
+    an explicit integrity label that a root already carries.
+  - **Undoing it.** Nothing removes the labels or the capability-SID ACEs. By hand, per
+    root: `icacls <root> /remove:g *<SID> /T` with the SID stored for that root in
+    `<data dir>\cap_sids.json`, and `icacls <root> /setintegritylevel (OI)(CI)M /T` (or
+    remove the explicit label ACE). Delete the entry from `cap_sids.json` afterwards, or
+    the same SID is reused on the next launch.
   - **Console injection.** The child shares the user's console and desktop. The job
     object blocks USER handles of other processes, desktop switching, global atoms and
     system-parameter changes, but the child can still write to the console input

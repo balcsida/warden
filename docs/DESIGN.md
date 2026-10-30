@@ -289,7 +289,10 @@ Backends in milestone 1:
   of the user (a browser renderer, another sandbox) can then write there; Low-integrity
   processes cannot write HKCU or most of `%LOCALAPPDATA%`, which harnesses may need
   (their home and `TEMP` are writable roots, so they are labelled); UIPI stops the child
-  sending window messages and input to higher-integrity windows. Capability SIDs persist in
+  sending window messages and input to higher-integrity windows. Unverified: a Low-integrity
+  process likely cannot open Medium named pipes for write, which would break ssh-agent,
+  credential helpers and docker. `label_root` replaces an explicit label already on a
+  root; undoing the labels and ACEs is manual (`icacls`, see README). Capability SIDs persist in
   `<data dir>\cap_sids.json`, so the ACL grants (generic read/write/execute/delete,
   no `WRITE_DAC`, no `FILE_DELETE_CHILD`, inherited) are made once per root and
   repeated launches leave the ACLs unchanged. `.git\hooks` and `.git\config` get a
@@ -299,7 +302,8 @@ Backends in milestone 1:
   attribute, so it never runs outside the job; `UILIMIT_HANDLES`, `DESKTOP`,
   `DISPLAYSETTINGS`, `EXITWINDOWS`, `GLOBALATOMS`, `SYSTEMPARAMETERS`, not the
   clipboard), an explicit environment block, and only
-  the three std handles inherited, so it owns the console like on Unix. `signal`:
+  the three std handles inherited, so it owns the console like on Unix (unverified at Low
+  integrity: CI uses pipes, and Node/libuv reopen `CONIN$`/`CONOUT$` for TTY handling). `signal`:
   Terminate/Hangup terminate the job; Interrupt sends Ctrl-C to the console. warden
   itself installs a console control handler (not inherited by the child, unlike
   `SetConsoleCtrlHandler(NULL, TRUE)`) so Ctrl-C reaches the harness first. Phase B

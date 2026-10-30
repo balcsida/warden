@@ -218,7 +218,7 @@ pub fn label_root(root: &Path) -> io::Result<bool> {
     let mut sacl: *mut ACL = std::ptr::null_mut();
     let mut sd: *mut c_void = std::ptr::null_mut();
     // SAFETY: `path` is NUL-terminated, out pointers are valid, the descriptor is
-    // freed by the guard and `acl` holds the header plus one 24-byte ACE.
+    // freed by the guard and `acl` holds the header plus one 20-byte ACE.
     unsafe {
         check(GetNamedSecurityInfoW(
             path.as_ptr(),

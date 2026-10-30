@@ -64,6 +64,21 @@ Warden is a client-side control. Be clear-eyed about what that means.
   `requirements.toml`) is a useful second layer that warden does not write;
   `warden doctor` tells you whether it is present.
 
+**What warden leaves behind on Windows.** The sandbox writes into the real ACLs of
+every writable root, and both changes persist after the run: an inheritable ACE for a
+random capability SID per root (the SIDs are listed in `<data dir>\cap_sids.json`) and
+an inheritable Low integrity label. Warden replaces an explicit integrity label already
+on a root. To undo it, per root:
+
+```text
+icacls <root> /remove:g *<SID> /T
+icacls <root> /setintegritylevel (OI)(CI)M /T
+```
+
+`/setintegritylevel ... M` sets a Medium label, which is what unlabelled files
+effectively have. Use the SID stored for that root in `cap_sids.json`, and delete its
+entry (or the file) afterwards.
+
 ## Install
 
 Releases ship static binaries for macOS (arm64, x86_64), Linux (x86_64, arm64,
