@@ -200,13 +200,15 @@ pub trait Sandbox {
 }
 ```
 
-`warden run` refuses to launch (exit 77) if any `read_write` root equals or contains
-warden's config or data dir, since the harness could otherwise rewrite adapters and the
-policy bundle; the harness homes under the data dir are unaffected. Inside a writable
-root, the `.git` directory is itself immovable (Seatbelt denies writes to the literal
-path; bwrap binds it onto itself so rename/rmdir fail with EBUSY) while ordinary writes
-in it still work. A `.git` created during the run, and `.git` files (worktrees) pointing
-elsewhere, are not covered.
+`warden run` refuses to launch (exit 77, `EX_NOPERM`) if any `read_write` root equals or
+contains warden's config or data dir, the trusted-keys file or the policy bundle, since the
+harness could otherwise rewrite adapters, trust its own signing key or swap the bundle; the
+harness homes under the data dir are unaffected. Inside a writable root, the `.git`
+directory is itself immovable (Seatbelt denies writes to the literal path; bwrap binds it
+onto itself so rename/rmdir fail with EBUSY) while ordinary writes in it still work; a
+`.git` file (worktree) is read-only. On Linux `.git/hooks` is created before launch if
+missing so it can be bound read-only. A `.git` created during the run, nested repos and
+submodules, and a symlinked `.git` are not covered.
 
 The sandboxed child **inherits warden's stdio**. There is no PTY in warden. The
 harness gets the real terminal, so resize (SIGWINCH goes to the foreground process
@@ -733,7 +735,8 @@ machine. Step 6 is the one network call and is bounded.
    into its home); Codex and OpenCode have no equivalent and get the plain env var.
    Write `emits` into the harness home (create `0700`). Create the harness home and
    workspace-local temp dir if missing.
-8. **Sandbox preflight + proxy.** Build `SandboxSpec`; `Sandbox::preflight()`;
+8. **Sandbox preflight + proxy.** Build `SandboxSpec`; refuse (exit 77) a writable root
+   that contains warden's own paths (§2.3); `Sandbox::preflight()`;
    start the egress proxy on a tokio runtime in a background thread; it owns the
    allowlist and the audit sender.
 9. **Spawn.** `Sandbox::spawn()` with inherited stdio. Record pid. Emit
@@ -745,7 +748,7 @@ machine. Step 6 is the one network call and is bounded.
     is still running 5 min before it, print one line to stderr ("credential expires in 5 min; save your work"); re-issuing into a
     running process is not possible with env-var injection (see Q4).
 11. **Exit.** `Provider::revoke()` best-effort (2s timeout; 8s through mint-serve, which makes two
-    LiteLLM calls of up to 3s each). Flush audit (bounded,
+    LiteLLM calls of up to 3s each); an early failure after step 6 revokes too. Flush audit (bounded,
     3s; drop on timeout). Remove proxy socket/tempdir. Exit with the child's code, or
     `128 + signal`.
 

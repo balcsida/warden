@@ -84,14 +84,16 @@ keychain is not a file on macOS but `~/Library/Keychains` is denied anyway).
 - Does **not** hold against damage *inside* the workspace, including
   `.git/hooks` and `.git/config` (a hook that runs on the developer's next commit
   outside warden escapes the sandbox). Codex marks `.git` read-only inside writable
-  roots for exactly this reason; warden does the same by default
-  (`defaults.protect_git_internals = true`) and the harness's own `git commit` still
-  works because git writes objects and refs, not hooks. A harness that must edit
-  hooks needs policy to turn this off. The `.git` directory itself cannot be renamed
-  or replaced either (so `mv .git .git.old` plus a planted hook fails), but a `.git`
-  created during the run, and `.git` files (worktrees) pointing elsewhere, are not
-  covered. Launches whose writable root contains warden's config or data dir are
-  refused, so the harness cannot rewrite adapters or the policy bundle.
+  roots for exactly this reason; warden does the same, always (there is no opt-out),
+  and the harness's own `git commit` still works because git writes objects and refs,
+  not hooks. The `.git` directory itself cannot be renamed or replaced either (so
+  `mv .git .git.old` plus a planted hook fails), and a `.git` file (worktree or
+  submodule `gitdir:` pointer) is read-only so it cannot be repointed at a fake git
+  dir. Not covered: a `.git` created during the run, nested repos and submodules
+  (`<root>/sub/.git`, `.git/modules/*/{hooks,config}`) and a symlinked `.git`.
+  Launches whose writable root contains warden's config or data dir, the trusted-keys
+  file or the policy bundle are refused, so the harness cannot rewrite adapters, trust
+  its own signing key or swap the bundle.
 - Does **not** hold against reading secrets that are *not* on the deny list.
   The default list is a start, not a census; orgs should extend it (browser
   profiles, password-manager caches, other repos). Readable home is a deliberate
