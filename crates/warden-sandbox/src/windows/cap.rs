@@ -100,7 +100,13 @@ impl Lock {
         for _ in 0..100 {
             match create() {
                 Ok(_) => return Ok(Self(path)),
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                // a lock another launch just removed reports PermissionDenied until its delete completes
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::AlreadyExists | io::ErrorKind::PermissionDenied
+                    ) =>
+                {
                     std::thread::sleep(Duration::from_millis(50))
                 }
                 Err(e) => return Err(e),
