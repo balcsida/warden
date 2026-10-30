@@ -52,7 +52,8 @@ jobs:
         run: |
           export WARDEN_DATA="$RUNNER_TEMP/warden-data"
           mkdir -p "$WARDEN_DATA/homes/pi"
-          PI_CODING_AGENT_DIR="$WARDEN_DATA/homes/pi" pi install npm:pi-provider-litellm
+          # git main until a release ships LITELLM_STARTUP_KEY_HELPER (>= 4.7.0); then npm:pi-provider-litellm
+          PI_CODING_AGENT_DIR="$WARDEN_DATA/homes/pi" pi install https://github.com/balcsida/pi-provider-litellm
           echo "WARDEN_DATA=$WARDEN_DATA" >> "$GITHUB_ENV"
       - name: Run conformance
         env:
