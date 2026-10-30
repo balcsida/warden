@@ -14,7 +14,11 @@ use windows_sys::Win32::System::Console::{
     GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
 use windows_sys::Win32::System::JobObjects::{
-    CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_UILIMIT_DESKTOP,
+    JOB_OBJECT_UILIMIT_DISPLAYSETTINGS, JOB_OBJECT_UILIMIT_EXITWINDOWS,
+    JOB_OBJECT_UILIMIT_GLOBALATOMS, JOB_OBJECT_UILIMIT_HANDLES,
+    JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS, JOBOBJECT_BASIC_UI_RESTRICTIONS,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicUIRestrictions,
     JobObjectExtendedLimitInformation, SetInformationJobObject,
 };
 use windows_sys::Win32::System::Threading::{
@@ -54,6 +58,29 @@ fn new_job() -> io::Result<OwnedHandle> {
             JobObjectExtendedLimitInformation,
             (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
             size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // No access to USER handles of other processes, no desktop switching, and no
+    // changes to system settings. The clipboard stays open for console tools, and the
+    // shared console still lets the child inject input (see THREAT_MODEL.md).
+    let ui = JOBOBJECT_BASIC_UI_RESTRICTIONS {
+        UIRestrictionsClass: JOB_OBJECT_UILIMIT_HANDLES
+            | JOB_OBJECT_UILIMIT_DESKTOP
+            | JOB_OBJECT_UILIMIT_DISPLAYSETTINGS
+            | JOB_OBJECT_UILIMIT_EXITWINDOWS
+            | JOB_OBJECT_UILIMIT_GLOBALATOMS
+            | JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS,
+    };
+    // SAFETY: `ui` is the structure the information class expects.
+    let ok = unsafe {
+        SetInformationJobObject(
+            job.as_raw_handle(),
+            JobObjectBasicUIRestrictions,
+            (&ui as *const JOBOBJECT_BASIC_UI_RESTRICTIONS).cast(),
+            size_of::<JOBOBJECT_BASIC_UI_RESTRICTIONS>() as u32,
         )
     };
     if ok == 0 {
@@ -150,7 +177,7 @@ pub fn spawn(
 ) -> io::Result<(u32, Child)> {
     let job = new_job()?;
     let mut cmd = cmdline::command_line(argv)?;
-    let env = cmdline::env_block(&spec.env);
+    let env = cmdline::env_block(&spec.env)?;
     // cmd.exe and friends reject the `\\?\` form that canonicalize() yields
     let cwd = wide(cap::canonical(&spec.cwd).as_os_str());
     // restricted tokens can fail DLL init without an explicit desktop (see codex process.rs)

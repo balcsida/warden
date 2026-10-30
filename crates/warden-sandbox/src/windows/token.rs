@@ -6,7 +6,7 @@ use std::ffi::c_void;
 use std::io;
 use std::os::windows::io::{FromRawHandle, OwnedHandle};
 
-use windows_sys::Win32::Foundation::{HANDLE, HLOCAL, LUID, LocalFree};
+use windows_sys::Win32::Foundation::{ERROR_NOT_ALL_ASSIGNED, HANDLE, HLOCAL, LUID, LocalFree};
 use windows_sys::Win32::Security::Authorization::{
     EXPLICIT_ACCESS_W, GRANT_ACCESS, SetEntriesInAclW, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN,
     TRUSTEE_W,
@@ -144,9 +144,12 @@ fn enable_change_notify(token: HANDLE) -> io::Result<()> {
         tp.PrivilegeCount = 1;
         tp.Privileges[0].Luid = luid;
         tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-        if AdjustTokenPrivileges(token, 0, &tp, 0, std::ptr::null_mut(), std::ptr::null_mut()) == 0
-        {
-            return Err(io::Error::last_os_error());
+        let ok =
+            AdjustTokenPrivileges(token, 0, &tp, 0, std::ptr::null_mut(), std::ptr::null_mut());
+        // success with ERROR_NOT_ALL_ASSIGNED means the privilege was not enabled
+        let err = io::Error::last_os_error();
+        if ok == 0 || err.raw_os_error() == Some(ERROR_NOT_ALL_ASSIGNED as i32) {
+            return Err(err);
         }
     }
     Ok(())
