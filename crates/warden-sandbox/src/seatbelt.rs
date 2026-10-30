@@ -115,6 +115,13 @@ impl Sandbox for Seatbelt {
         Ok(())
     }
     fn spawn(&self, spec: &SandboxSpec, argv: &[OsString]) -> Result<LaunchedChild, SandboxError> {
+        // SPIKE ONLY: dump the generated profile for the CI repro
+        if Path::new("/tmp/warden-spike").is_dir() {
+            let t = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos());
+            let _ = std::fs::write(format!("/tmp/warden-spike/profile-{t}.sbpl"), profile(spec).0);
+        }
         crate::unix::spawn(&SANDBOX_EXEC.into(), &args(spec, argv), spec)
     }
     fn wait(&self, child: &mut LaunchedChild) -> Result<ExitStatus, SandboxError> {

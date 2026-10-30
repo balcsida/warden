@@ -1,0 +1,30 @@
+name: spike-macos-proxy
+on:
+  push:
+    branches: ['spike/**']
+jobs:
+  repro:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: raw sandbox-exec variants
+        run: bash .github/spike/macos-proxy.sh 100
+      - name: real warden test loop
+        run: bash .github/spike/macos-warden-loop.sh 60
+      - name: summary
+        if: always()
+        run: |
+          cat spike-out/summary.txt spike-out/warden-summary.txt || true
+          echo ---- failures; head -150 spike-out/failures.log spike-out/warden-failures.log || true
+          echo ---- sandbox log; grep -i 'deny\|network' spike-out/sandbox-stream.log | head -60 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spike-${{ matrix.os }}
+          path: spike-out
