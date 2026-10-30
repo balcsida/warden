@@ -793,6 +793,10 @@ fn launch(
     drop(proxy);
     // ExitCode carries a u8, but Windows exit codes are 32 bits wide
     if cfg!(windows) {
+        // process::exit skips destructors: close the job (killing leftovers that hold
+        // files open) and delete the per-launch dir so its cap_sids entry can prune
+        drop(child);
+        drop(tmp);
         std::process::exit(code);
     }
     Ok(ExitCode::from(code.clamp(0, 255) as u8))
