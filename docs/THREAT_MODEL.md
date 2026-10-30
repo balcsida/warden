@@ -70,6 +70,11 @@ SOCKS5 to allowlisted hostnames only.
 - Linux without user namespaces: `bwrap --unshare-net` is unavailable; warden
   refuses unless the bundle sets `sandbox.allow_degraded`, in which case only
   seccomp (deny non-loopback `connect`) remains. Document this per fleet.
+- **Windows (phase A) does not hold for C1 at all.** A restricted token cannot block
+  sockets, so the harness can connect anywhere; the proxy variables are advisory.
+  `warden run` refuses on Windows unless the bundle sets
+  `defaults.sandbox_allow_degraded`, and then prints a warning. Phase B (a sandbox
+  user plus firewall rules scoped to it, needing admin once) is meant to close this.
 
 ### C2 Filesystem sandbox
 
@@ -84,10 +89,16 @@ keychain is not a file on macOS but `~/Library/Keychains` is denied anyway).
 - Does **not** hold against damage *inside* the workspace, including
   `.git/hooks` and `.git/config` (a hook that runs on the developer's next commit
   outside warden escapes the sandbox). Codex marks `.git` read-only inside writable
-  roots for exactly this reason; warden does the same by default
-  (`defaults.protect_git_internals = true`) and the harness's own `git commit` still
-  works because git writes objects and refs, not hooks. A harness that must edit
-  hooks needs policy to turn this off.
+  roots for exactly this reason; warden does the same, always (there is no opt-out),
+  and the harness's own `git commit` still works because git writes objects and refs,
+  not hooks. On macOS and Linux the `.git` directory itself cannot be renamed or
+  replaced either (so `mv .git .git.old` plus a planted hook fails), and a `.git` file
+  (worktree or submodule `gitdir:` pointer) is read-only so it cannot be repointed at
+  a fake git dir. Not covered: a `.git` created during the run, nested repos and
+  submodules (`<root>/sub/.git`, `.git/modules/*/{hooks,config}`) and a symlinked
+  `.git`. Launches whose writable root contains warden's config or data dir, the
+  trusted-keys file or the policy bundle are refused, so the harness cannot rewrite
+  adapters, trust its own signing key or swap the bundle.
 - Does **not** hold against reading secrets that are *not* on the deny list.
   The default list is a start, not a census; orgs should extend it (browser
   profiles, password-manager caches, other repos). Readable home is a deliberate
@@ -97,6 +108,56 @@ keychain is not a file on macOS but `~/Library/Keychains` is denied anyway).
   own sandbox use. If Apple removes it, the macOS backend must move to an
   `Endpoint Security`-free alternative (likely a helper using the same
   `sandbox_init` API, or Apple's Containerization). Tracked as a platform risk.
+- Windows (phase A): only a partial write limit holds (outside the roots nothing can be
+  created, modified, deleted or renamed; inside them `.git` is not protected, see below).
+  A restricted token (`WRITE_RESTRICTED`, capability SIDs per writable root) running at
+  Low integrity, with the roots labelled Low, stops writes outside the roots, and `.git\hooks`
+  and `.git\config` get deny-write ACEs if they exist at launch. **Deny-read is not
+  enforced**: the child runs as the developer and can read `~/.ssh` and the rest.
+  Inside a Low-labelled root, writes to files where Everyone, the logon SID or a
+  restricting SID already has write access succeed; elsewhere the Low integrity level
+  rejects them. The ACL grants persist
+  after the run on purpose, since descendants may outlive warden; the process tree
+  itself is killed with warden (job object). Phase B adds deny-read through a
+  separate sandbox user.
+  - **`.git` can be renamed or deleted inside a root.** A `WRITE_RESTRICTED` token checks
+    the restricting SIDs only for write-class rights, and DELETE is not one; the Low
+    integrity level and the Low label on the roots close that outside the roots (tested).
+    Inside a root the child may still delete or rename `.git`, `.git\hooks` and
+    `.git\config` (through `DELETE` on the object or `FILE_DELETE_CHILD` on its parent)
+    and move a copy with a planted hook back, which defeats the hook and config denies.
+    A Medium label on `.git` would stop it but also stops git creating `index.lock`, and no
+    ACE can single out the child (DESIGN §2.3 lists what was tried). Closing it needs
+    phase B (ignored test in `sandbox_windows.rs`).
+  - **Labels persist.** The Low label stays on the workspace after the run, so any other
+    Low-integrity process of the user can write there. The child itself cannot write HKCU
+    or most of `%LOCALAPPDATA%`, which breaks some harness tooling. `label_root` replaces
+    an explicit integrity label that a root already carries.
+  - **Undoing it.** Nothing removes the labels or the capability-SID ACEs. By hand, per
+    root: `icacls <root> /remove:g *<SID> /T` with the SID stored for that root in
+    `<data dir>\cap_sids.json`, and `icacls <root> /setintegritylevel (OI)(CI)M /T` (or
+    remove the explicit label ACE). Delete the entry from `cap_sids.json` afterwards, or
+    the same SID is reused on the next launch.
+  - **Console injection.** The child shares the user's console and desktop. The job
+    object blocks USER handles of other processes, desktop switching, global atoms and
+    system-parameter changes, but the child can still write to the console input
+    buffer (`WriteConsoleInput`), queueing keystrokes that the parent shell runs after
+    warden exits. That is code execution outside the roots, the Windows analogue of
+    TIOCSTI. It stays open until phase B's private desktop and ConPTY.
+  - **Keychain token.** DESIGN §9 caches the OIDC ID token in the OS keychain, and
+    deny-read is off on Windows, so the child (same user) can read it and mint
+    further gateway keys until it expires.
+  - **ACL side effects.** Grants and denies are written into the real ACLs of the
+    workspace and persist (see above), and the first grant on a large tree rewrites
+    every ACL below the root, which can take a long time. Later launches are fast.
+  - **Same-user processes.** The child cannot open warden for `PROCESS_VM_WRITE`,
+    `PROCESS_CREATE_THREAD` or `PROCESS_DUP_HANDLE` (tested). With the logon SID in
+    every default DACL, two concurrent launches could open each other with all three
+    (found on windows-2022); each launch now has a random SID in its restricting list
+    and default DACL instead, and a test covers it. Reading another process is still
+    allowed, as for any same-user process.
+  - `.cmd`/`.bat` harnesses (npm shims) run through cmd.exe, which cannot be
+    quoted safely, so arguments containing `"`, `%` or a line break are refused.
 - `TMPDIR` and `/tmp` are writable; a tool can stage data there, but C1 keeps it
   on the machine.
 
@@ -220,4 +281,5 @@ this. The controls that do:
 - Preventing a developer with admin rights from running software without warden.
 - Content inspection of prompts or completions (that belongs at the gateway).
 - Anti-tamper of the `warden` binary itself (code signing and MDM do that).
-- Windows sandboxing in milestone 1; `warden run` refuses on Windows.
+- Windows network egress and deny-read enforcement before phase B; until then
+  `warden run` on Windows needs `defaults.sandbox_allow_degraded`.

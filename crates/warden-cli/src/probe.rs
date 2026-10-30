@@ -4,7 +4,12 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-pub fn run(read: &std::path::Path, write: &std::path::Path, connect: &str) -> ExitCode {
+pub fn run(
+    read: &std::path::Path,
+    write: &std::path::Path,
+    connect: &str,
+    pid: Option<u32>,
+) -> ExitCode {
     let mut out = std::io::stdout().lock();
     let r = std::fs::read(read).is_ok();
     let _ = writeln!(out, "read={}", if r { "ok" } else { "denied" });
@@ -37,5 +42,70 @@ pub fn run(read: &std::path::Path, write: &std::path::Path, connect: &str) -> Ex
         Ok(false) => writeln!(out, "proxy=denied"),
         Err(why) => writeln!(out, "proxy=unavailable ({why})"),
     };
+    #[cfg(windows)]
+    open_process(&mut out, pid);
+    #[cfg(not(windows))]
+    let _ = pid;
     ExitCode::SUCCESS
+}
+
+/// Prints `open_<right>=ok|denied` for `OpenProcess` on `pid` (default: the
+/// parent, i.e. warden) with each right a sandboxed child must not get.
+#[cfg(windows)]
+fn open_process(out: &mut impl Write, pid: Option<u32>) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_CREATE_THREAD, PROCESS_DUP_HANDLE, PROCESS_VM_WRITE,
+    };
+    let Some(pid) = pid.or_else(parent_pid) else {
+        let _ = writeln!(out, "open=no-target");
+        return;
+    };
+    for (name, right) in [
+        ("vm_write", PROCESS_VM_WRITE),
+        ("create_thread", PROCESS_CREATE_THREAD),
+        ("dup_handle", PROCESS_DUP_HANDLE),
+    ] {
+        // SAFETY: plain query; a returned handle is closed right away.
+        let h = unsafe { OpenProcess(right, 0, pid) };
+        let _ = writeln!(
+            out,
+            "open_{name}={}",
+            if h.is_null() { "denied" } else { "ok" }
+        );
+        if !h.is_null() {
+            // SAFETY: `h` is a valid handle owned here.
+            unsafe { CloseHandle(h) };
+        }
+    }
+}
+
+#[cfg(windows)]
+fn parent_pid() -> Option<u32> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+    let me = std::process::id();
+    // SAFETY: the snapshot handle is closed below; the entry is zeroed with `dwSize` set.
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let mut e: PROCESSENTRY32W = std::mem::zeroed();
+        e.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+        let mut found = None;
+        let mut more = Process32FirstW(snap, &mut e) != 0;
+        while more {
+            if e.th32ProcessID == me {
+                found = Some(e.th32ParentProcessID);
+                break;
+            }
+            more = Process32NextW(snap, &mut e) != 0;
+        }
+        CloseHandle(snap);
+        found
+    }
 }

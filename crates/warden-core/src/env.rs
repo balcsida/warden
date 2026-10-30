@@ -30,28 +30,56 @@ const PASSTHROUGH: &[&str] = &[
     "WAYLAND_DISPLAY",
     // Windows essentials
     "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "WINDIR",
     "COMSPEC",
+    "PATHEXT",
     "USERPROFILE",
+    "USERNAME",
+    "USERDOMAIN",
+    "COMPUTERNAME",
+    "HOMEDRIVE",
+    "HOMEPATH",
     "APPDATA",
     "LOCALAPPDATA",
+    "ALLUSERSPROFILE",
+    "PUBLIC",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMW6432",
+    "COMMONPROGRAMFILES",
+    "COMMONPROGRAMFILES(X86)",
+    "COMMONPROGRAMW6432",
+    "PROGRAMDATA",
+    "OS",
+    "PROCESSOR_ARCHITECTURE",
+    "NUMBER_OF_PROCESSORS",
     "TEMP",
     "TMP",
-    "PATHEXT",
 ];
 const PASSTHROUGH_PREFIX: &[&str] = &["LC_"];
 
 /// Variables that may be passed only when policy explicitly allows them.
 pub const OPTIONAL: &[&str] = &["SSH_AUTH_SOCK", "GIT_SSH_COMMAND", "GPG_TTY"];
 
+/// Windows variable names are case-insensitive (`SystemRoot`, `Path`), so match
+/// and key them in upper case there; other platforms match exactly.
 pub fn base_from_parent(
     parent: impl Iterator<Item = (String, String)>,
     optional: &[&str],
 ) -> BTreeMap<String, String> {
     parent
+        .map(|(k, v)| (if cfg!(windows) { k.to_uppercase() } else { k }, v))
         .filter(|(k, _)| {
             PASSTHROUGH.contains(&k.as_str())
                 || PASSTHROUGH_PREFIX.iter().any(|p| k.starts_with(p))
-                || optional.contains(&k.as_str())
+                || optional.iter().any(|o| {
+                    if cfg!(windows) {
+                        o.eq_ignore_ascii_case(k)
+                    } else {
+                        o == k
+                    }
+                })
         })
         .collect()
 }
@@ -101,5 +129,21 @@ mod tests {
         assert_eq!(env.keys().collect::<Vec<_>>(), ["LC_ALL", "PATH"]);
         let env = base_from_parent(parent.into_iter(), &["SSH_AUTH_SOCK"]);
         assert!(env.contains_key("SSH_AUTH_SOCK"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_names_match_case_insensitively() {
+        let parent = [
+            ("SystemRoot", r"C:\Windows"),
+            ("Path", "x"),
+            ("ssh_auth_sock", "s"),
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string()));
+        let env = base_from_parent(parent.into_iter(), &["ssh_auth_sock"]);
+        assert_eq!(
+            env.keys().collect::<Vec<_>>(),
+            ["PATH", "SSH_AUTH_SOCK", "SYSTEMROOT"]
+        );
     }
 }

@@ -31,14 +31,24 @@ pub fn profile(spec: &SandboxSpec) -> (String, Vec<(String, PathBuf)>) {
         params.push((key.clone(), canon(root)));
         // keep .git internals read-only inside writable roots: a planted hook would run
         // outside the sandbox on the developer's next commit
-        let hooks = canon(root).join(".git");
-        if hooks.is_dir() {
+        let git = canon(root).join(".git");
+        if git.is_dir() {
             let hk = format!("WRITABLE_{i}_GIT");
-            params.push((hk.clone(), hooks.join("hooks")));
+            params.push((hk.clone(), git.join("hooks")));
             let ck = format!("WRITABLE_{i}_GITCFG");
-            params.push((ck.clone(), hooks.join("config")));
+            params.push((ck.clone(), git.join("config")));
+            let gk = format!("WRITABLE_{i}_GITDIR");
+            params.push((gk.clone(), git.clone()));
+            // the literal `.git` entry too, so it cannot be renamed away and replaced
             write_parts.push(format!(
-                "(require-all (subpath (param \"{key}\")) (require-not (subpath (param \"{hk}\"))) (require-not (literal (param \"{ck}\"))))"
+                "(require-all (subpath (param \"{key}\")) (require-not (subpath (param \"{hk}\"))) (require-not (literal (param \"{ck}\"))) (require-not (literal (param \"{gk}\"))))"
+            ));
+        } else if git.is_file() {
+            // worktree/submodule `gitdir:` pointer: repointing it runs code via a fake git dir
+            let gk = format!("WRITABLE_{i}_GITDIR");
+            params.push((gk.clone(), git));
+            write_parts.push(format!(
+                "(require-all (subpath (param \"{key}\")) (require-not (literal (param \"{gk}\"))))"
             ));
         } else {
             write_parts.push(format!("(subpath (param \"{key}\"))"));
@@ -147,6 +157,8 @@ mod tests {
             },
             env: BTreeMap::new(),
             cwd: dir.join("ws"),
+            data_dir: dir.join("data"),
+            sandbox_allow_degraded: false,
         }
     }
 
@@ -159,6 +171,7 @@ mod tests {
         assert!(p.contains("(deny default)"));
         assert!(p.contains("(allow file-read*)"));
         assert!(p.contains("(require-not (subpath (param \"WRITABLE_0_GIT\")))"));
+        assert!(p.contains("(require-not (literal (param \"WRITABLE_0_GITDIR\")))"));
         assert!(p.contains("(deny file-read* file-write* (subpath (param \"DENY_0\"))"));
         assert!(p.contains("(allow network-outbound (remote ip \"localhost:4321\"))"));
         assert!(
@@ -170,8 +183,19 @@ mod tests {
                 .iter()
                 .filter(|(k, _)| k.starts_with("WRITABLE_0"))
                 .count(),
-            3
+            4
         );
+    }
+
+    #[test]
+    fn git_file_literal_is_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("ws")).unwrap();
+        std::fs::write(dir.path().join("ws/.git"), "gitdir: /elsewhere\n").unwrap();
+        let (p, params) = profile(&spec(dir.path()));
+        assert!(p.contains("(require-not (literal (param \"WRITABLE_0_GITDIR\")))"));
+        assert!(!p.contains("WRITABLE_0_GIT\""));
+        assert!(params.iter().any(|(k, _)| k == "WRITABLE_0_GITDIR"));
     }
 
     /// Runs the real sandbox: reads outside are fine, the denied dir is not, writes

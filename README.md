@@ -17,7 +17,11 @@ use, mint a short-lived gateway credential for you, start a local allowlisting
 egress proxy, and launch the harness inside an OS sandbox whose only way out is
 that proxy. The harness inherits your terminal, so interactive TUIs work unchanged.
 
-Status: milestone 1 (macOS and Linux). Windows refuses to run until milestone 2.
+Status: milestone 1 (macOS and Linux). Windows is phase A: a partial write limit (no
+create, modify, delete or rename outside the roots; `.git` inside a root can still be renamed) and
+process-tree kill are enforced, network egress and deny-read paths are **not**, and
+`warden run` only starts when the bundle sets `defaults.sandbox_allow_degraded`.
+The elevated phase B (sandbox user and firewall rules) is still to come.
 Design: `docs/DESIGN.md`. Threat model: `docs/THREAT_MODEL.md`.
 
 ## What is enforced, and what is not
@@ -34,11 +38,12 @@ Warden is a client-side control. Be clear-eyed about what that means.
 - Network: no socket leaves the sandbox except to warden's proxy on loopback.
   The proxy allows CONNECT/SOCKS5 to allowlisted hostnames only. There is no
   DNS inside the sandbox. Linux uses a fresh network namespace; macOS uses
-  Seatbelt rules.
+  Seatbelt rules. **On Windows (phase A) network egress and the deny list are not enforced yet.**
 - Credentials: per-launch, per-user, TTL-bound, scoped to the allowed models.
-  Never written to disk by warden. For Claude Code the key never enters the
-  environment at all; the harness fetches it per request from a socket warden
-  owns. (Pi would support the same through pi-provider-litellm, but that
+  Never written to disk by warden. For Claude Code on macOS and Linux the key never
+  enters the environment at all; the harness fetches it per request from a socket
+  warden owns (the socket is Unix-only, so on Windows the key is in the environment).
+  (Pi would support the same through pi-provider-litellm, but that
   extension does not run key helpers at startup yet, so Pi gets the env var.)
 - Identity and policy: groups come from the IdP's signed token; the bundle is
   Ed25519-signed and validated against the Cedar schema; anything unverifiable
@@ -58,6 +63,21 @@ Warden is a client-side control. Be clear-eyed about what that means.
 - Harness-native managed config (Claude Code `managed-settings.json`, Codex
   `requirements.toml`) is a useful second layer that warden does not write;
   `warden doctor` tells you whether it is present.
+
+**What warden leaves behind on Windows.** The sandbox writes into the real ACLs of
+every writable root, and both changes persist after the run: an inheritable ACE for a
+random capability SID per root (the SIDs are listed in `<data dir>\cap_sids.json`) and
+an inheritable Low integrity label. Warden replaces an explicit integrity label already
+on a root. To undo it, per root:
+
+```text
+icacls <root> /remove:g *<SID> /T
+icacls <root> /setintegritylevel (OI)(CI)M /T
+```
+
+`/setintegritylevel ... M` sets a Medium label, which is what unlabelled files
+effectively have. Use the SID stored for that root in `cap_sids.json`, and delete its
+entry (or the file) afterwards.
 
 ## Install
 

@@ -723,21 +723,34 @@ pub fn expand_tilde(p: &str) -> String {
     }
 }
 
+/// Names to try for `exe` in one PATH directory. On Windows the PATHEXT
+/// spellings come first: npm installs both an extensionless sh shim `claude`
+/// (not runnable by CreateProcess) and `claude.cmd`. Only the extensions
+/// CreateProcess can run are kept (not `.JS`, `.VBS`, `.WSF`, `.MSC`).
+fn path_candidates(dir: &Path, exe: &str, pathext: Option<&str>) -> Vec<PathBuf> {
+    pathext
+        .into_iter()
+        .flat_map(|exts| exts.split(';'))
+        .filter(|e| {
+            [".com", ".exe", ".bat", ".cmd"]
+                .iter()
+                .any(|r| e.eq_ignore_ascii_case(r))
+        })
+        .map(|ext| dir.join(format!("{exe}{ext}")))
+        .chain([dir.join(exe)])
+        .collect()
+}
+
 fn find_on_path(exe: &str) -> Option<PathBuf> {
     let p = Path::new(exe);
     if p.is_absolute() {
         return p.is_file().then(|| p.to_path_buf());
     }
     let path = std::env::var_os("PATH")?;
+    let pathext = cfg!(windows)
+        .then(|| std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into()));
     std::env::split_paths(&path)
-        .map(|d| d.join(exe))
-        .chain(if cfg!(windows) {
-            std::env::split_paths(&path)
-                .map(|d| d.join(format!("{exe}.cmd")))
-                .collect::<Vec<_>>()
-        } else {
-            vec![]
-        })
+        .flat_map(|d| path_candidates(&d, exe, pathext.as_deref()))
         .find(|c| c.is_file())
 }
 
@@ -964,5 +977,19 @@ template = "${key}"
             .unwrap();
         assert_eq!(f, ApiFormat::Litellm);
         assert!(pi.choose_inject(&[]).is_err());
+    }
+
+    #[test]
+    fn path_candidates_prefer_pathext_over_the_bare_name() {
+        let dir = Path::new("bin");
+        assert_eq!(
+            path_candidates(dir, "claude", Some(".JS;.EXE;.VBS;.cmd;.MSC;")),
+            [
+                dir.join("claude.EXE"),
+                dir.join("claude.cmd"),
+                dir.join("claude")
+            ]
+        );
+        assert_eq!(path_candidates(dir, "claude", None), [dir.join("claude")]);
     }
 }

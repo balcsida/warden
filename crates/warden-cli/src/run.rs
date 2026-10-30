@@ -12,7 +12,7 @@ use secrecy::{ExposeSecret, SecretString};
 use warden_audit::{AuditSink, Event};
 use warden_core::adapter::LaunchContext;
 use warden_core::{
-    Action, AdapterSet, HostRule, Identity, IdentityProvider, IssueRequest, NetworkSpec,
+    Action, AdapterSet, HostRule, Identity, IdentityProvider, IssueRequest, NetworkSpec, Provider,
     ProxyHandle, Sandbox, SandboxSpec,
 };
 use warden_policy::{AdapterNeeds, Ctx, VerifiedBundle};
@@ -20,6 +20,110 @@ use warden_policy::{AdapterNeeds, Ctx, VerifiedBundle};
 use crate::{Cli, Cmd, EX_CONFIG, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE, Fail, dirs};
 
 const BRIDGE_PORT: u16 = 3128;
+
+/// Absolute, with symlinks resolved in the nearest existing ancestor and the missing
+/// tail re-appended, so a dir that does not exist yet compares in the form the kernel
+/// will see once it does.
+fn norm(p: &Path) -> PathBuf {
+    let abs = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    let mut tail = Vec::new();
+    let mut base = abs.as_path();
+    let mut out = loop {
+        if let Ok(c) = std::fs::canonicalize(base) {
+            break c;
+        }
+        match (base.file_name(), base.parent()) {
+            (Some(name), Some(parent)) => {
+                tail.push(name);
+                base = parent;
+            }
+            _ => break base.to_path_buf(),
+        }
+    };
+    out.extend(tail.iter().rev());
+    if cfg!(windows) {
+        windows_form(&out.to_string_lossy())
+    } else {
+        out
+    }
+}
+
+/// Windows paths compare without the verbatim `\\?\` prefix and case-insensitively.
+fn windows_form(p: &str) -> PathBuf {
+    let p = match p.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => p.strip_prefix(r"\\?\").unwrap_or(p).to_string(),
+    };
+    PathBuf::from(p.to_lowercase())
+}
+
+/// A writable root that contains warden's config or data dir, the trusted-keys file or
+/// the policy bundle would let the harness rewrite adapters, trust its own signing key
+/// or swap the bundle for later launches. The reverse (the data dir containing a root,
+/// e.g. the harness homes) is fine.
+fn refuse_roots_containing_warden_paths(read_write: &[PathBuf], cli: &Cli) -> Result<(), Fail> {
+    for path in [
+        dirs::config_dir(),
+        dirs::data_dir(),
+        dirs::trusted_keys_path(cli.trusted_keys.as_ref()),
+        dirs::bundle_path(cli.policy.as_ref()),
+    ] {
+        let shown = path.display().to_string();
+        let path = norm(&path);
+        for root in read_write {
+            if path.starts_with(norm(root)) {
+                return Err(Fail::new(
+                    EX_NOPERM,
+                    format!(
+                        "writable root {} contains warden's own path {shown}; run warden from a project directory",
+                        root.display()
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Revokes the issued credential exactly once: explicitly at exit, or on drop when an
+/// early return skips that.
+struct RevokeOnDrop<'a> {
+    provider: &'a dyn Provider,
+    cred: &'a warden_core::Credential,
+    audit: &'a dyn AuditSink,
+    done: bool,
+}
+
+impl RevokeOnDrop<'_> {
+    fn revoke(&mut self) {
+        if std::mem::replace(&mut self.done, true) {
+            return;
+        }
+        let id = self.provider.id();
+        match self.provider.revoke(self.cred) {
+            Ok(()) => self
+                .audit
+                .emit(Event::new("credential.revoked").attr("provider", id)),
+            Err(e) => {
+                eprintln!("warden: could not revoke the credential ({e}); it lapses at its TTL");
+                self.audit.emit(
+                    Event::new("credential.revoke_failed")
+                        .attr("provider", id)
+                        .attr("error", e),
+                );
+            }
+        }
+    }
+}
+
+impl Drop for RevokeOnDrop<'_> {
+    fn drop(&mut self) {
+        if !self.done {
+            self.revoke();
+            self.audit.flush(Duration::from_secs(2));
+        }
+    }
+}
 
 pub fn dispatch(cli: &Cli) -> Result<ExitCode, Fail> {
     match &cli.cmd {
@@ -183,6 +287,8 @@ pub fn probe_spec(tmp: &Path) -> SandboxSpec {
         },
         env: BTreeMap::new(),
         cwd: tmp.to_path_buf(),
+        data_dir: dirs::data_dir(),
+        sandbox_allow_degraded: false,
     }
 }
 
@@ -429,6 +535,14 @@ fn launch(
             ),
     );
 
+    // from here every early return revokes the key
+    let mut revoker = (!dry_run).then(|| RevokeOnDrop {
+        provider: &*provider,
+        cred: &cred,
+        audit: &*audit,
+        done: false,
+    });
+
     // 7. harness plan + environment
     let tmp = tempfile::Builder::new().prefix("warden-").tempdir()?;
     #[cfg(unix)]
@@ -527,6 +641,11 @@ fn launch(
         ),
     );
     env.insert("AI_AGENT_LAUNCHER".into(), "warden".into());
+    // The user's temp dir is not writable in the sandbox; use the per-launch one.
+    #[cfg(windows)]
+    for k in ["TEMP", "TMP"] {
+        env.insert(k.into(), tmp.path().display().to_string());
+    }
     let helper_in_use = plan.secret_env.is_none();
     if helper_in_use {
         env.insert(
@@ -561,6 +680,7 @@ fn launch(
     }
     read_write.sort();
     read_write.dedup();
+    refuse_roots_containing_warden_paths(&read_write, cli)?;
     let spec = SandboxSpec {
         workspace: workspace.clone(),
         read_only: plan.fs_ro.clone(),
@@ -573,6 +693,8 @@ fn launch(
         },
         env: env.clone(),
         cwd: workspace.clone(),
+        data_dir: dirs::data_dir(),
+        sandbox_allow_degraded: bundle.defaults.sandbox_allow_degraded,
     };
 
     if dry_run {
@@ -595,6 +717,10 @@ fn launch(
         );
         audit.flush(Duration::from_secs(2));
         return Err(Fail::new(EX_UNAVAILABLE, e));
+    }
+    let degraded = sandbox.degraded();
+    if let Some(warning) = degraded {
+        eprintln!("warden: WARNING {warning}");
     }
     if no_sandbox {
         eprintln!(
@@ -623,9 +749,15 @@ fn launch(
         e.extend(plan.env_with_secret());
         e
     };
+    // before the spawn, so a Ctrl-C right after it cannot kill warden ahead of the harness
+    #[cfg(windows)]
+    warden_sandbox::windows::ignore_console_interrupts();
     let mut child = sandbox
         .spawn(&spec, &argv)
         .map_err(|e| Fail::new(EX_UNAVAILABLE, e))?;
+    // before anything slow (the audit sink), so an early SIGTERM is relayed, not fatal
+    #[cfg(unix)]
+    install_signal_forwarding(child.pid, child.signal_fd);
     audit.emit(
         Event::new("harness.launch")
             .attr("harness", harness)
@@ -636,26 +768,17 @@ fn launch(
             .attr("model", &model)
             .attr("provider", provider_id)
             .attr("sandbox", sandbox.name())
+            .attr("degraded", degraded.is_some())
             .attr("workspace", workspace.display())
             .attr("pid", child.pid),
     );
 
     // 10. supervise
-    #[cfg(unix)]
-    install_signal_forwarding(child.pid);
     let status = sandbox.wait(&mut child).map_err(|e| Fail::new(1, e))?;
 
     // 11. exit
-    match provider.revoke(&cred) {
-        Ok(()) => audit.emit(Event::new("credential.revoked").attr("provider", provider_id)),
-        Err(e) => {
-            eprintln!("warden: could not revoke the credential ({e}); it lapses at its TTL");
-            audit.emit(
-                Event::new("credential.revoke_failed")
-                    .attr("provider", provider_id)
-                    .attr("error", e),
-            );
-        }
+    if let Some(r) = &mut revoker {
+        r.revoke();
     }
     #[cfg(unix)]
     let code = warden_sandbox::exit_code(status);
@@ -668,6 +791,14 @@ fn launch(
     );
     audit.flush(Duration::from_secs(3));
     drop(proxy);
+    // ExitCode carries a u8, but Windows exit codes are 32 bits wide
+    if cfg!(windows) {
+        // process::exit skips destructors: close the job (killing leftovers that hold
+        // files open) and delete the per-launch dir so its cap_sids entry can prune
+        drop(child);
+        drop(tmp);
+        std::process::exit(code);
+    }
     Ok(ExitCode::from(code.clamp(0, 255) as u8))
 }
 
@@ -748,23 +879,81 @@ fn print_plan(
 }
 
 #[cfg(unix)]
-fn install_signal_forwarding(pid: u32) {
+fn install_signal_forwarding(pid: u32, signal_fd: Option<i32>) {
     use std::sync::atomic::{AtomicI32, Ordering};
     static CHILD: AtomicI32 = AtomicI32::new(0);
+    static SIGNAL_FD: AtomicI32 = AtomicI32::new(-1);
     CHILD.store(pid as i32, Ordering::SeqCst);
+    SIGNAL_FD.store(signal_fd.unwrap_or(-1), Ordering::SeqCst);
     extern "C" fn forward(sig: libc::c_int) {
+        let fd = SIGNAL_FD.load(Ordering::SeqCst);
+        if fd >= 0 {
+            // Linux: bwrap would die on the signal, so the in-sandbox helper relays it.
+            let byte = sig as u8;
+            // SAFETY: async-signal-safe write of one byte from a live local.
+            unsafe { libc::write(fd, (&raw const byte).cast(), 1) };
+            return;
+        }
         let pid = CHILD.load(Ordering::SeqCst);
         if pid > 0 {
             // SAFETY: async-signal-safe syscall with a pid we own.
             unsafe { libc::kill(pid, sig) };
         }
     }
-    // SAFETY: installing plain handlers; `forward` only calls kill(2).
+    // SAFETY: installing plain handlers; `forward` only calls write(2) or kill(2).
     unsafe {
         libc::signal(libc::SIGTERM, forward as *const () as libc::sighandler_t);
         libc::signal(libc::SIGHUP, forward as *const () as libc::sighandler_t);
         // The tty delivers SIGINT to the whole foreground group; the harness handles it.
         libc::signal(libc::SIGINT, libc::SIG_IGN);
         libc::signal(libc::SIGQUIT, libc::SIG_IGN);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn norm_resolves_ancestors_of_missing_paths() {
+        // expected values in the same comparison form norm() returns
+        let form = |p: PathBuf| {
+            if cfg!(windows) {
+                windows_form(&p.to_string_lossy())
+            } else {
+                p
+            }
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let real = std::fs::canonicalize(dir.path()).unwrap();
+        // missing tail under a (possibly symlinked, e.g. macOS /var) tempdir
+        assert_eq!(
+            norm(&dir.path().join("new/sub")),
+            form(real.join("new").join("sub"))
+        );
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&real, dir.path().join("link")).unwrap();
+            assert_eq!(norm(&dir.path().join("link/new")), real.join("new"));
+        }
+        // relative paths become absolute
+        let cwd = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+        assert_eq!(
+            norm(Path::new("warden-missing/x")),
+            form(cwd.join("warden-missing").join("x"))
+        );
+    }
+
+    #[test]
+    fn windows_form_strips_verbatim_and_lowercases() {
+        assert_eq!(
+            windows_form(r"\\?\C:\Users\Me"),
+            PathBuf::from(r"c:\users\me")
+        );
+        assert_eq!(windows_form(r"C:\Users\Me"), PathBuf::from(r"c:\users\me"));
+        assert_eq!(
+            windows_form(r"\\?\UNC\Srv\Share"),
+            PathBuf::from(r"\\srv\share")
+        );
     }
 }

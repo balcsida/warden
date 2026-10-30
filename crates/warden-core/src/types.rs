@@ -193,6 +193,10 @@ pub struct SandboxSpec {
     /// The complete child environment. Nothing is inherited implicitly.
     pub env: BTreeMap<String, String>,
     pub cwd: PathBuf,
+    /// Warden's data directory, for state a backend persists (Windows capability SIDs).
+    pub data_dir: PathBuf,
+    /// Policy accepts a backend that cannot enforce every guarantee (`defaults.sandbox_allow_degraded`).
+    pub sandbox_allow_degraded: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,6 +218,8 @@ pub enum SandboxError {
 
 pub struct LaunchedChild {
     pub pid: u32,
+    /// Write end of a pipe that relays signals to the harness when `pid` is not it (Linux).
+    pub signal_fd: Option<i32>,
     pub(crate) inner: Box<dyn std::any::Any + Send>,
 }
 
@@ -221,8 +227,12 @@ impl LaunchedChild {
     pub fn new<T: std::any::Any + Send>(pid: u32, inner: T) -> Self {
         Self {
             pid,
+            signal_fd: None,
             inner: Box::new(inner),
         }
+    }
+    pub fn inner_ref<T: std::any::Any>(&self) -> Option<&T> {
+        self.inner.downcast_ref()
     }
     pub fn inner_mut<T: std::any::Any>(&mut self) -> Option<&mut T> {
         self.inner.downcast_mut()
@@ -232,6 +242,10 @@ impl LaunchedChild {
 pub trait Sandbox {
     fn name(&self) -> &str;
     fn preflight(&self, spec: &SandboxSpec) -> Result<(), SandboxError>;
+    /// A warning when this backend enforces less than the full policy (Windows phase A).
+    fn degraded(&self) -> Option<&'static str> {
+        None
+    }
     fn spawn(&self, spec: &SandboxSpec, argv: &[OsString]) -> Result<LaunchedChild, SandboxError>;
     fn wait(&self, child: &mut LaunchedChild) -> Result<ExitStatus, SandboxError>;
     fn signal(&self, child: &LaunchedChild, sig: Signal) -> Result<(), SandboxError>;
@@ -276,8 +290,6 @@ pub struct Defaults {
     #[serde(default = "default_ttl_secs", with = "secs")]
     pub credential_ttl: Duration,
     pub max_budget_usd: Option<f64>,
-    #[serde(default = "default_true")]
-    pub protect_git_internals: bool,
     #[serde(default)]
     pub sandbox_allow_degraded: bool,
     /// Honour `WARDEN_DEV_IDENTITY` (a JSON identity, no IdP). For CI and conformance tests only.
@@ -292,9 +304,6 @@ pub struct Defaults {
     pub audit: Option<AuditConfig>,
 }
 
-fn default_true() -> bool {
-    true
-}
 fn default_ttl_secs() -> Duration {
     Duration::from_secs(8 * 3600)
 }

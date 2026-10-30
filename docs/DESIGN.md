@@ -30,7 +30,7 @@ crates/
   warden-identity/   OIDC device flow -> Identity
   warden-provider/   StaticProvider, LiteLlmProvider
   warden-sandbox/    SandboxSpec compiler, macOS Seatbelt, Linux bwrap/Landlock/seccomp,
-                     Windows stub, egress proxy
+                     Windows restricted-token backend, egress proxy
   warden-policy/     bundle format, ed25519 verification, Cedar evaluation
   warden-audit/      OTLP exporter (feature-gated; `none` sink always available)
 adapters/            claude-code.toml codex.toml opencode.toml pi.toml  (source of truth, embedded at build)
@@ -175,6 +175,9 @@ pub struct SandboxSpec {
     pub deny_read: Vec<PathBuf>,                 // e.g. ~/.ssh, ~/.aws, ~/.gnupg, warden's own state
     pub network: NetworkSpec,
     pub env: BTreeMap<String, String>,           // the complete child environment; nothing inherited implicitly
+    pub cwd: PathBuf,
+    pub data_dir: PathBuf,                       // warden's data dir, for state a backend persists (Windows capability SIDs)
+    pub sandbox_allow_degraded: bool,            // policy accepts a backend that cannot enforce everything
 }
 
 pub struct NetworkSpec {
@@ -193,6 +196,8 @@ pub trait Sandbox {
     /// Check the platform can enforce this spec (sandbox-exec present, bwrap/user-ns available, …).
     /// Returning Err stops the launch (fail closed). Also used by `warden doctor`.
     fn preflight(&self, spec: &SandboxSpec) -> Result<(), SandboxError>;
+    /// A warning when this backend enforces less than the full policy (Windows phase A); default None.
+    fn degraded(&self) -> Option<&'static str> { None }
     /// Spawn `argv` with inherited stdio inside the sandbox. Does not wait.
     fn spawn(&self, spec: &SandboxSpec, argv: &[OsString]) -> Result<LaunchedChild, SandboxError>;
     fn wait(&self, child: &mut LaunchedChild) -> Result<ExitStatus, SandboxError>;
@@ -200,10 +205,20 @@ pub trait Sandbox {
 }
 ```
 
+`warden run` refuses to launch (exit 77, `EX_NOPERM`) if any `read_write` root equals or
+contains warden's config or data dir, the trusted-keys file or the policy bundle, since the
+harness could otherwise rewrite adapters, trust its own signing key or swap the bundle; the
+harness homes under the data dir are unaffected. Inside a writable root, the `.git`
+directory is itself immovable (Seatbelt denies writes to the literal path; bwrap binds it
+onto itself so rename/rmdir fail with EBUSY) while ordinary writes in it still work; a
+`.git` file (worktree) is read-only. On Linux `.git/hooks` is created before launch if
+missing so it can be bound read-only. A `.git` created during the run, nested repos and
+submodules, and a symlinked `.git` are not covered.
+
 The sandboxed child **inherits warden's stdio**. There is no PTY in warden. The
 harness gets the real terminal, so resize (SIGWINCH goes to the foreground process
 group), raw mode, mouse, colour and exit codes all work with zero code. Warden only
-forwards SIGINT/SIGTERM/SIGHUP to the child's process group and exits with the
+forwards SIGTERM/SIGHUP to the child (SIGINT reaches it from the tty) and exits with the
 child's status (or 128+signal). This is how codex's `sandbox-exec` and `bwrap`
 wrappers already run. `portable-pty` is a dev-dependency used by the conformance
 tests to drive the TUI, not by the product.
@@ -236,10 +251,65 @@ Backends in milestone 1:
   Landlock+seccomp only (no mount namespace, no net namespace) when user namespaces
   are disabled, and `preflight` then downgrades with an explicit warning only if
   policy sets `sandbox.allow_degraded = true`; otherwise refuses.
-- `WindowsSandbox`: `preflight` returns `Err(Unsupported("Windows sandboxing lands
-  in milestone 2; see docs/THREAT_MODEL.md"))`. Milestone 2 will port codex's
-  `windows-sandbox-rs` approach (restricted token + ACL grants, elevated one-time
-  setup).
+- `WindowsSandbox` (phase A, `warden-sandbox/src/windows/`, derived from codex's
+  `windows-sandbox-rs`, see `THIRD_PARTY_NOTICES.md`). **Enforced**: writes are limited
+  to the `read_write` roots (creating, modifying, deleting and renaming files; **inside a
+  root, `.git` can still be deleted or renamed**, see below), and the harness's whole process tree dies
+  with warden. **Not enforced**: network egress and `deny_read` (a restricted token
+  cannot block sockets or reads). So `preflight` refuses unless
+  `SandboxSpec.sandbox_allow_degraded` (`defaults.sandbox_allow_degraded`) is set, and
+  then `Sandbox::degraded()` supplies the warning `warden run` prints and records as
+  `degraded=true` in the `harness.launch` audit event (`warden doctor` prints the same warning).
+  How it works: `CreateRestrictedToken(DISABLE_MAX_PRIVILEGE | LUA_TOKEN |
+  WRITE_RESTRICTED)` with restricting SIDs = one random capability SID per canonical
+  writable root + the logon SID + Everyone + one random SID per launch (a write needs an
+  allow ACE for one of them; reads are unaffected). The token's default DACL grants the
+  user and that per-launch SID, so a concurrent launch's children cannot open this
+  launch's processes for write (the logon SID is shared by every launch of a session).
+  `cap_sids.json` is written atomically under a lock file, pruned of roots that no longer
+  exist, and a corrupt file is moved to `cap_sids.json.bad`.
+  **Low integrity**: the restricting-SID pass of a `WRITE_RESTRICTED` token runs only
+  for write-class rights and DELETE is not one, so on its own the child could delete or
+  rename anything the user can. The token therefore also runs at Low integrity
+  (`TokenIntegrityLevel` S-1-16-4096) and every writable root gets an inheritable Low
+  mandatory label (no-write-up, `SetNamedSecurityInfoW`, idempotent like the grants), so
+  Medium files outside the roots reject its writes, deletes and renames (verified on
+  windows-2022, `files_outside_the_roots_cannot_be_deleted_or_renamed`). **`.git` gap**:
+  inside a root the child may still delete or rename `.git` (and `.git\hooks`, `.git\config`)
+  and plant a hook. Tried on windows-2022: a Medium label on `.git` (with an inherit-only
+  Low label for its children) blocks `DELETE` on `.git` but also creating `index.lock`
+  in it, so `git commit` fails, and `ren .git` still succeeds through the root's
+  `FILE_DELETE_CHILD`; a deny ACE for the integrity SID, or a conditional ACE
+  `Member_of {SID(LW)}`, never matches (integrity SIDs are not part of the DACL group
+  match); only an unconditional deny of `DELETE`/`FILE_DELETE_CHILD` combined with the
+  Medium label stopped the rename, and that also locks out the developer. Phase B (a
+  separate sandbox user, whose SID a DACL can name) closes it; the ignored test
+  `git_dir_cannot_be_renamed_or_replaced_but_stays_writable` records the target.
+  Side effects: the labels persist on the workspace, so any other Low-integrity process
+  of the user (a browser renderer, another sandbox) can then write there; Low-integrity
+  processes cannot write HKCU or most of `%LOCALAPPDATA%`, which harnesses may need
+  (their home and `TEMP` are writable roots, so they are labelled); UIPI stops the child
+  sending window messages and input to higher-integrity windows. Unverified: a Low-integrity
+  process likely cannot open Medium named pipes for write, which would break ssh-agent,
+  credential helpers and docker. `label_root` replaces an explicit label already on a
+  root; undoing the labels and ACEs is manual (`icacls`, see README). Capability SIDs persist in
+  `<data dir>\cap_sids.json`, so the ACL grants (generic read/write/execute/delete,
+  no `WRITE_DAC`, no `FILE_DELETE_CHILD`, inherited) are made once per root and
+  repeated launches leave the ACLs unchanged. `.git\hooks` and `.git\config` get a
+  deny-write ACE for the capability SIDs of the roots that contain them, if they
+  exist at launch (a hooks directory created later is not covered). The child is
+  created with `CreateProcessAsUserW` inside a `KILL_ON_JOB_CLOSE` job (job-list
+  attribute, so it never runs outside the job; `UILIMIT_HANDLES`, `DESKTOP`,
+  `DISPLAYSETTINGS`, `EXITWINDOWS`, `GLOBALATOMS`, `SYSTEMPARAMETERS`, not the
+  clipboard), an explicit environment block, and only
+  the three std handles inherited, so it owns the console like on Unix (unverified at Low
+  integrity: CI uses pipes, and Node/libuv reopen `CONIN$`/`CONOUT$` for TTY handling). `signal`:
+  Terminate/Hangup terminate the job; Interrupt sends Ctrl-C to the console. warden
+  itself installs a console control handler (not inherited by the child, unlike
+  `SetConsoleCtrlHandler(NULL, TRUE)`) so Ctrl-C reaches the harness first. Phase B
+  (elevated one-time setup: a sandbox user, firewall rules scoped to it, a runner
+  process, deny-read ACLs) would close the network and read gaps; it needs admin and
+  is not started. The credential socket is Unix-only, so Windows uses the env key.
 - `NoSandbox`: only selectable when the policy bundle grants
   `Warden::Action::"launchUnsandboxed"`; prints a red banner. Exists so a
   group can be exempted explicitly rather than by patching the binary.
@@ -725,19 +795,20 @@ machine. Step 6 is the one network call and is bounded.
    into its home); Codex and OpenCode have no equivalent and get the plain env var.
    Write `emits` into the harness home (create `0700`). Create the harness home and
    workspace-local temp dir if missing.
-8. **Sandbox preflight + proxy.** Build `SandboxSpec`; `Sandbox::preflight()`;
+8. **Sandbox preflight + proxy.** Build `SandboxSpec`; refuse (exit 77) a writable root
+   that contains warden's own paths (§2.3); `Sandbox::preflight()`;
    start the egress proxy on a tokio runtime in a background thread; it owns the
    allowlist and the audit sender.
 9. **Spawn.** `Sandbox::spawn()` with inherited stdio. Record pid. Emit
    `harness.launch` audit event (harness, version, model, provider id, sandbox
    backend, workspace, hash of the policy bundle; never the credential).
-10. **Supervise.** Install handlers for SIGINT/SIGTERM/SIGHUP (forward to child's
-    process group) and SIGCHLD. Block in `wait()`. If the credential has
-    `expires_at` and the harness is still running 5 min before it, print one line to
-    stderr ("credential expires in 5 min; save your work"); re-issuing into a
+10. **Supervise.** Install handlers for SIGTERM/SIGHUP (forward to the child; on
+    Linux through the helper's signal pipe) and ignore SIGINT, which the tty
+    delivers. Block in `wait()`. If the credential has `expires_at` and the harness
+    is still running 5 min before it, print one line to stderr ("credential expires in 5 min; save your work"); re-issuing into a
     running process is not possible with env-var injection (see Q4).
 11. **Exit.** `Provider::revoke()` best-effort (2s timeout; 8s through mint-serve, which makes two
-    LiteLLM calls of up to 3s each). Flush audit (bounded,
+    LiteLLM calls of up to 3s each); an early failure after step 6 revokes too. Flush audit (bounded,
     3s; drop on timeout). Remove proxy socket/tempdir. Exit with the child's code, or
     `128 + signal`.
 
@@ -848,8 +919,8 @@ Q8 warden-owned harness homes. Q9 refuse without user namespaces unless
 - **Q6 cargo-dist.** axodotdev's funding ended and maintenance has been sporadic.
   It still works; the alternative is a hand-written release workflow with
   `cross`. Proceed with cargo-dist and revisit if a toolchain bump breaks it?
-- **Q7 Windows reads.** Milestone 2 only. Should `warden run` on Windows refuse
-  (current plan) or launch with provider injection and the proxy but no sandbox
+- **Q7 Windows reads.** Phase A refuses unless the bundle opts into the degraded
+  mode (no network or deny-read enforcement); phase B closes them. Should it instead launch with provider injection and the proxy but no sandbox
   when policy permits `launchUnsandboxed`? The latter gives Windows users the
   routing benefit today.
 - **Q8 Harness home vs real home.** Giving each harness a warden-owned home
@@ -866,6 +937,8 @@ Deviations from the design above, all deliberate:
 - **ID token is cached in the OS keychain**, not memory only. Otherwise every
   `warden run` would hit the IdP; the keychain is the user's own encrypted store.
   The cached token is still signature-verified on every use.
+- **`.git` is immovable, warden's own dirs are off limits**: see §2.3. Both are
+  checked at launch, not while the harness runs.
 - **Reads are allowed everywhere except the deny list** (Seatbelt `(allow
   file-read*)` minus `deny` paths; bwrap `--ro-bind / /` with `--tmpfs` over deny
   paths). `readPath` decisions therefore only matter for adapter `[[fs]] ro`
@@ -892,7 +965,9 @@ Deviations from the design above, all deliberate:
   io_uring, process_vm_*). Landlock can be layered later if a fleet lacks bwrap.
   bwrap brings `lo` up itself under `--unshare-net`, so the helper needs no
   capability; it keeps the proxy bridge in-process and runs the harness as a
-  child (PDEATHSIG) rather than exec'ing it.
+  child (PDEATHSIG) rather than exec'ing it. bwrap does not forward signals, so warden
+  writes SIGTERM/SIGHUP numbers to a pipe the helper inherits through bwrap
+  (`--signal-fd`), and the helper delivers them to the harness.
 - **`warden-adapters` crate folded into `warden-core`** (see §1).
 - **`warden mint-serve`**: for LiteLLM deployments without JWT auth (OSS). The
   `litellm` provider takes an optional `mint_url`; the client then POSTs
@@ -917,6 +992,11 @@ Deviations from the design above, all deliberate:
   work through the proxy. obs-fold and bare LF in the head are refused with 400.
   Absolute-form, as first written, was 404'd by uvicorn (LiteLLM); CONNECT tunnels
   (and so `wss://`) are unaffected.
+
+- **Windows (phase A)**: see §2.3. `defaults.sandbox_allow_degraded` is the only way
+  to run there until the elevated mode exists; macOS and Linux ignore it today.
+  Child env names are matched case-insensitively and upper-cased on Windows
+  (`SystemRoot` is passed through), and `TEMP`/`TMP` point at the per-launch dir.
 
 - **Q10 Name.** `warden` is taken on crates.io by an unrelated crate. Binary name can
   stay `warden`; the crate names can be `warden-*` only if those are free (they
