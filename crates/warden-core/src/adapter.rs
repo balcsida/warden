@@ -725,11 +725,17 @@ pub fn expand_tilde(p: &str) -> String {
 
 /// Names to try for `exe` in one PATH directory. On Windows the PATHEXT
 /// spellings come first: npm installs both an extensionless sh shim `claude`
-/// (not runnable by CreateProcess) and `claude.cmd`.
+/// (not runnable by CreateProcess) and `claude.cmd`. Only the extensions
+/// CreateProcess can run are kept (not `.JS`, `.VBS`, `.WSF`, `.MSC`).
 fn path_candidates(dir: &Path, exe: &str, pathext: Option<&str>) -> Vec<PathBuf> {
     pathext
         .into_iter()
-        .flat_map(|exts| exts.split(';').filter(|e| !e.is_empty()))
+        .flat_map(|exts| exts.split(';'))
+        .filter(|e| {
+            [".com", ".exe", ".bat", ".cmd"]
+                .iter()
+                .any(|r| e.eq_ignore_ascii_case(r))
+        })
         .map(|ext| dir.join(format!("{exe}{ext}")))
         .chain([dir.join(exe)])
         .collect()
@@ -977,10 +983,10 @@ template = "${key}"
     fn path_candidates_prefer_pathext_over_the_bare_name() {
         let dir = Path::new("bin");
         assert_eq!(
-            path_candidates(dir, "claude", Some(".EXE;.CMD;")),
+            path_candidates(dir, "claude", Some(".JS;.EXE;.VBS;.cmd;.MSC;")),
             [
                 dir.join("claude.EXE"),
-                dir.join("claude.CMD"),
+                dir.join("claude.cmd"),
                 dir.join("claude")
             ]
         );
