@@ -1,7 +1,8 @@
 //! `warden mint-serve`: the one server-side piece. Holds the LiteLLM master key,
 //! verifies the caller's IdP ID token, re-evaluates the signed bundle's policy for
 //! that user, and mints a scoped virtual key via `/key/generate`. Lets OSS LiteLLM
-//! (no JWT auth) still hand out short-lived per-user keys.
+//! (no JWT auth) still hand out short-lived per-user keys. `/v1/revoke` deletes a
+//! key it minted: OSS LiteLLM only lets the master key delete keys.
 
 use std::io::Read;
 use std::process::ExitCode;
@@ -54,8 +55,13 @@ fn reply(req: tiny_http::Request, status: u16, body: serde_json::Value) {
 }
 
 fn handle(mut req: tiny_http::Request, v: &VerifiedBundle, cfg: &Config) {
-    if req.method() != &tiny_http::Method::Post || req.url() != "/v1/mint" {
-        return reply(req, 404, serde_json::json!({"error": "POST /v1/mint"}));
+    let revoke_path = req.url() == "/v1/revoke";
+    if req.method() != &tiny_http::Method::Post || (req.url() != "/v1/mint" && !revoke_path) {
+        return reply(
+            req,
+            404,
+            serde_json::json!({"error": "POST /v1/mint or /v1/revoke"}),
+        );
     }
     let auth = req
         .headers()
@@ -74,6 +80,12 @@ fn handle(mut req: tiny_http::Request, v: &VerifiedBundle, cfg: &Config) {
             serde_json::json!({"error": "missing bearer token"}),
         );
     };
+    if revoke_path {
+        return match revoke(token, cfg) {
+            Ok(()) => reply(req, 200, serde_json::json!({"revoked": true})),
+            Err((status, msg)) => reply(req, status, serde_json::json!({"error": msg})),
+        };
+    }
     let mut body = String::new();
     if req
         .as_reader()
@@ -125,6 +137,49 @@ fn verify(token: &str, v: &VerifiedBundle, cfg: &Config) -> Result<Identity, Ide
         });
     }
     warden_identity::verify_id_token(&v.bundle.identity, token)
+}
+
+/// Possession of the virtual key is the proof of ownership: the holder can already
+/// spend it, so letting it end the key grants nothing new and works after the ID
+/// token has expired. Only keys this server minted (`metadata.issued_by`) qualify, so
+/// the endpoint is no master-key delete oracle for other keys.
+fn revoke(key: &str, cfg: &Config) -> Result<(), (u16, String)> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| (500, e.to_string()))?;
+    let litellm = |path: &str| (cfg.litellm_url.join(path).expect("url"), &cfg.master_key);
+    let (url, master) = litellm("key/info");
+    let resp = client
+        .get(url)
+        .query(&[("key", key)])
+        .bearer_auth(master.expose_secret())
+        .send()
+        .map_err(|e| (502, format!("litellm: {e}")))?;
+    if !resp.status().is_success() {
+        return Err((404, "unknown key".into()));
+    }
+    let info: serde_json::Value = resp
+        .json()
+        .map_err(|e| (502, format!("litellm body: {e}")))?;
+    if info["info"]["metadata"]["issued_by"] != "warden" {
+        return Err((403, "not a warden-issued key".into()));
+    }
+    let (url, master) = litellm("key/delete");
+    let resp = client
+        .post(url)
+        .bearer_auth(master.expose_secret())
+        .json(&serde_json::json!({ "keys": [key] }))
+        .send()
+        .map_err(|e| (502, format!("litellm: {e}")))?;
+    if !resp.status().is_success() {
+        return Err((
+            502,
+            format!("litellm /key/delete returned {}", resp.status()),
+        ));
+    }
+    eprintln!("revoked a key for {}", info["info"]["user_id"]);
+    Ok(())
 }
 
 /// Policy is re-evaluated server side; the client's model list is only a filter.
