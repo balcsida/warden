@@ -908,8 +908,11 @@ Deviations from the design above, all deliberate:
   token has expired; keys without `metadata.issued_by = warden` are refused.
   `tests/it_litellm.rs` runs the whole path against a real proxy (opt-in, `tests/it/litellm/`).
 - **Egress proxy, plain HTTP**: forwarded in origin-form with `Connection: close`
-  (one request per proxied connection). Absolute-form, as first written, was 404'd by
-  uvicorn (LiteLLM); CONNECT tunnels are unaffected.
+  (one request per proxied connection), the client's `Host` replaced by the target's
+  authority, and `TE`/`Upgrade` dropped as hop-by-hop, so upgrades (`ws://`) do not
+  work through the proxy. obs-fold and bare LF in the head are refused with 400.
+  Absolute-form, as first written, was 404'd by uvicorn (LiteLLM); CONNECT tunnels
+  (and so `wss://`) are unaffected.
 
 - **Q10 Name.** `warden` is taken on crates.io by an unrelated crate. Binary name can
   stay `warden`; the crate names can be `warden-*` only if those are free (they
