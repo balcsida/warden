@@ -14,14 +14,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: concurrent shuffled
-        run: bash .github/spike/macos-proxy10.sh 360
+      - run: bash .github/spike/macos-proxy4.sh 8 6
+      - run: bash .github/spike/macos-proxy6.sh 20
+      - run: bash .github/spike/macos-proxy10.sh 120
+      - run: bash .github/spike/macos-warden-loop.sh 100
       - name: summary
         if: always()
         run: |
-          cat spike-out/summary10.txt || true
-          echo ---- failures;  head -150 spike-out/warden-failures.log || true
-          echo ---- sandbox log; grep -i 'deny\|network' spike-out/sandbox-stream.log | head -60 || true
+          echo "SUMMARY ${{ matrix.os }} rep ${{ matrix.rep }} $(sw_vers -productVersion)"
+          echo "SUMMARY e4 failing connects: $(grep -c '   fail' spike-out/results4.txt)"
+          grep -E "variant=" spike-out/results4.txt | grep -v fail | awk '{print "SUMMARY e4", $3, $5, $6}' | sort | uniq -c | head -0
+          sed 's/^/SUMMARY e6 /' spike-out/summary6.txt
+          sed 's/^/SUMMARY e10 /' spike-out/summary10.txt
+          sed 's/^/SUMMARY warden /' spike-out/warden-summary.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
