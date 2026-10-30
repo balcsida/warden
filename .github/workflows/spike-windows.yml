@@ -35,7 +35,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory C:\spike, C:\spike\out, C:\spike\granted, C:\spike\notgranted | Out-Null
           # C:\ children inherit Authenticated Users:Modify; cut inheritance so "not granted" is real.
-          icacls C:\spike /inheritance:r /grant 'BUILTIN\Administrators:(OI)(CI)F' "$($env:USERNAME):(OI)(CI)F" "*$($env:SBX_GROUP_SID):(RX)" | Out-Null
+          icacls C:\spike /inheritance:r /grant 'BUILTIN\Administrators:(OI)(CI)F' "$($env:USERNAME):(OI)(CI)F" "*$($env:SBX_GROUP_SID):(OI)(CI)(RX)" | Out-Null
           icacls C:\spike\out /grant "*$($env:SBX_GROUP_SID):(OI)(CI)M" | Out-Null
           icacls C:\spike\granted /grant "*$($env:SBX_GROUP_SID):(OI)(CI)M" | Out-Null
           icacls C:\spike\notgranted | Write-Host
