@@ -1,6 +1,8 @@
 //! Windows sandbox (phase A) integration tests: the restricted token limits
-//! writes to the writable roots, `.git/hooks` and `.git/config` stay read-only,
-//! ACL grants are idempotent, and killing warden kills the harness's whole tree.
+//! writes to the writable roots, `.git/hooks` and `.git/config` stay read-only
+//! and `.git` cannot be renamed, ACL grants are idempotent and do not follow
+//! junctions, the child cannot open warden or another launch for write, and
+//! killing warden kills the harness's whole tree.
 //! Network egress and deny-read are not enforced on Windows yet, so the bundle
 //! sets `sandbox_allow_degraded` and nothing here asserts them.
 #![cfg(windows)]
@@ -209,24 +211,134 @@ fn repeated_launches_leave_acls_unchanged() {
 }
 
 #[test]
+fn git_dir_cannot_be_renamed_or_replaced_but_stays_writable() {
+    let e = Env::new(true);
+    let git = e.ws.join(".git");
+
+    // the rename trick: move .git away, copy it back with a planted hook
+    let out = e
+        .command("cmd", &["ren", ".git", ".git.old"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{out:?}");
+    assert!(git.join("hooks").is_dir());
+    assert!(!e.ws.join(".git.old").exists());
+
+    // delete and recreate
+    let out = e
+        .command("cmd", &["rd", "/s", "/q", ".git"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{out:?}");
+    assert_eq!(
+        std::fs::read_to_string(git.join("config")).unwrap(),
+        "[core]\n"
+    );
+
+    // objects and refs live under .git and must stay writable
+    let probe = git.join("warden-probe");
+    let (stdout, stderr) = e.probe_write(&probe);
+    assert!(stdout.contains("write=ok"), "{stdout}\n{stderr}");
+    assert!(probe.exists());
+}
+
+#[test]
+fn junction_in_a_new_root_is_not_followed() {
+    let e = Env::new(true);
+    let target = e.outside.join("target");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("keep.txt"), "keep").unwrap();
+    let link = e.ws.join("link");
+    let made = Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(&link)
+        .arg(&target)
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "{made:?}");
+    let before = (icacls(&target), icacls(&target.join("keep.txt")));
+
+    let (stdout, stderr) = e.probe_write(&link.join("pwned.txt"));
+    assert!(stdout.contains("write=denied"), "{stdout}\n{stderr}");
+    assert!(!target.join("pwned.txt").exists());
+    assert_eq!(before, (icacls(&target), icacls(&target.join("keep.txt"))));
+}
+
+/// Probe output lines `open_<right>=ok|denied` as a single string, for `OpenProcess` on `pid`.
+fn probe_open(e: &Env, pid: Option<u32>) -> String {
+    let missing = e.ws.join("missing");
+    let write = e.ws.join("w.txt");
+    let pid = pid.map(|p| p.to_string());
+    let mut args = vec![
+        missing.to_str().unwrap(),
+        write.to_str().unwrap(),
+        "127.0.0.1:1",
+    ];
+    args.extend(pid.as_deref());
+    let out = e.command("probe", &args).output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| l.starts_with("open"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+const ALL_DENIED: &str = "open_vm_write=denied open_create_thread=denied open_dup_handle=denied";
+
+#[test]
+fn child_cannot_open_the_warden_process_for_write() {
+    let e = Env::new(true);
+    assert_eq!(probe_open(&e, None), ALL_DENIED);
+}
+
+#[test]
+fn child_cannot_open_another_launches_process_for_write() {
+    let (a, b) = (Env::new(true), Env::new(true));
+    let mut first = a
+        .command("cmd", &["ping", "-n", "4218", "127.0.0.1"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_until("the first launch's ping to start", || {
+        !ping_pids("4218").is_empty()
+    });
+    let victim = ping_pids("4218")[0];
+
+    let opened = probe_open(&b, Some(victim));
+    first.kill().unwrap();
+    first.wait().unwrap();
+    assert_eq!(opened, ALL_DENIED);
+}
+
+#[test]
 fn harness_exit_code_propagates() {
     let e = Env::new(true);
     let out = e.command("cmd", &["exit", "3"]).output().unwrap();
     assert_eq!(out.status.code(), Some(3), "{out:?}");
+    // exit codes wider than a byte survive
+    let out = e.command("cmd", &["exit", "300"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(300), "{out:?}");
 }
 
-fn pings(marker: &str) -> usize {
+fn ping_pids(marker: &str) -> Vec<u32> {
     let script = format!(
-        "@(Get-CimInstance Win32_Process | Where-Object {{ $_.Name -eq 'ping.exe' -and $_.CommandLine -like '*{marker}*' }}).Count"
+        "Get-CimInstance Win32_Process | Where-Object {{ $_.Name -eq 'ping.exe' -and $_.CommandLine -like '*{marker}*' }} | ForEach-Object {{ $_.ProcessId }}"
     );
     let out = Command::new("powershell")
         .args(["-NoProfile", "-Command", &script])
         .output()
         .unwrap();
     String::from_utf8_lossy(&out.stdout)
-        .trim()
-        .parse()
-        .unwrap_or(0)
+        .lines()
+        .filter_map(|l| l.trim().parse().ok())
+        .collect()
+}
+
+fn pings(marker: &str) -> usize {
+    ping_pids(marker).len()
 }
 
 fn wait_until(what: &str, mut done: impl FnMut() -> bool) {

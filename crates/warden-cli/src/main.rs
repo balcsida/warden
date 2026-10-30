@@ -106,6 +106,8 @@ pub enum Cmd {
         write: PathBuf,
         /// host:port to connect to directly and via the proxy
         connect: String,
+        /// Windows: also try to open this process (default: the parent) with write-class access
+        pid: Option<u32>,
     },
 }
 
@@ -146,7 +148,8 @@ fn main() -> ExitCode {
             read,
             write,
             connect,
-        } => return probe::run(read, write, connect),
+            pid,
+        } => return probe::run(read, write, connect, *pid),
         _ => {}
     }
     match run::dispatch(&cli) {

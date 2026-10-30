@@ -3838,6 +3838,7 @@ dependencies = [
  "warden-policy",
  "warden-provider",
  "warden-sandbox",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
