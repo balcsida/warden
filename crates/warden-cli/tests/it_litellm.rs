@@ -10,9 +10,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-/// Prints the key, then one completion made through the sandbox's proxy with it. `-p` tunnels
-/// via CONNECT: the proxy forwards plain-HTTP requests in absolute form, which uvicorn 404s.
-const HARNESS: &str = r#"echo "$LITELLM_API_KEY"; exec curl -sS -p "$LITELLM_BASE_URL/v1/chat/completions" -H "Authorization: Bearer $LITELLM_API_KEY" -H "Content-Type: application/json" -d '{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}'"#;
+/// Prints the key, then one completion made through the sandbox's proxy with it. Plain
+/// HTTP on purpose: uvicorn 404s the absolute-form target unless the proxy rewrites it.
+const HARNESS: &str = r#"echo "$LITELLM_API_KEY"; exec curl -sS "$LITELLM_BASE_URL/v1/chat/completions" -H "Authorization: Bearer $LITELLM_API_KEY" -H "Content-Type: application/json" -d '{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}'"#;
 
 struct Fixture {
     root: tempfile::TempDir,

@@ -1,4 +1,4 @@
-//! Allowlisting egress proxy: HTTP CONNECT, plain HTTP forward (absolute-form)
+//! Allowlisting egress proxy: HTTP CONNECT, plain HTTP forward (sent on in origin-form)
 //! and SOCKS5 CONNECT with hostname addressing. No TLS interception. Runs
 //! outside the sandbox; the sandbox lets the child reach only this listener.
 
@@ -222,10 +222,50 @@ where
             .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             .await?;
     } else {
+        let Some(head) = origin_form(&head) else {
+            return respond(&mut client, "400 Bad Request").await;
+        };
         upstream.write_all(&head).await?;
     }
     let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
     Ok(())
+}
+
+/// Rewrite a proxy request (`GET http://host/p HTTP/1.1`) to the origin-form an
+/// origin server expects (`GET /p HTTP/1.1`; RFC 9112 §3.2.1), and force
+/// `Connection: close`: later requests on a kept-alive connection would be piped
+/// unparsed, still in absolute form. Bytes after the header (body) pass through.
+fn origin_form(head: &[u8]) -> Option<Vec<u8>> {
+    let end = head.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let text = std::str::from_utf8(&head[..end]).ok()?;
+    let mut lines = text.split("\r\n");
+    let mut parts = lines.next()?.split_whitespace();
+    let (method, target, version) = (parts.next()?, parts.next()?, parts.next()?);
+    let rest = target.strip_prefix("http://")?;
+    let path = &rest[rest.find(['/', '?']).unwrap_or(rest.len())..];
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    let mut out = format!("{method} {path} {version}\r\n");
+    for line in lines {
+        let name = line.split(':').next().unwrap_or_default().trim();
+        let hop = [
+            "connection",
+            "proxy-connection",
+            "keep-alive",
+            "proxy-authorization",
+        ];
+        if !hop.iter().any(|h| name.eq_ignore_ascii_case(h)) {
+            out.push_str(line);
+            out.push_str("\r\n");
+        }
+    }
+    out.push_str("Connection: close\r\n\r\n");
+    let mut out = out.into_bytes();
+    out.extend_from_slice(&head[end + 4..]);
+    Some(out)
 }
 
 async fn respond<S: tokio::io::AsyncWrite + Unpin>(
@@ -442,11 +482,25 @@ mod tests {
             "GET http://127.0.0.1:{echo}/x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
         )
         .unwrap();
-        // echo server mirrors the forwarded head back
-        assert!(read_some(&mut s).starts_with("GET http://127.0.0.1"));
+        // echo server mirrors the forwarded head back, now in origin-form
+        assert!(read_some(&mut s).starts_with("GET /x HTTP/1.1\r\n"));
         let mut s = connect(&proxy);
         write!(s, "GET /relative HTTP/1.1\r\n\r\n").unwrap();
         assert!(read_some(&mut s).starts_with("HTTP/1.1 400"));
+    }
+
+    #[test]
+    fn origin_form_rewrites_target_and_hop_headers() {
+        let head = b"POST http://gw:4000/v1/chat?x=1 HTTP/1.1\r\nHost: gw:4000\r\nProxy-Connection: keep-alive\r\nconnection: keep-alive\r\nAuthorization: Bearer k\r\n\r\n{\"a\":1}";
+        let out = String::from_utf8(origin_form(head).unwrap()).unwrap();
+        assert_eq!(
+            out,
+            "POST /v1/chat?x=1 HTTP/1.1\r\nHost: gw:4000\r\nAuthorization: Bearer k\r\nConnection: close\r\n\r\n{\"a\":1}"
+        );
+        let bare = origin_form(b"GET http://gw HTTP/1.1\r\n\r\n").unwrap();
+        assert!(bare.starts_with(b"GET / HTTP/1.1\r\n"));
+        let query = origin_form(b"GET http://gw?q HTTP/1.1\r\n\r\n").unwrap();
+        assert!(query.starts_with(b"GET /?q HTTP/1.1\r\n"));
     }
 
     #[test]
