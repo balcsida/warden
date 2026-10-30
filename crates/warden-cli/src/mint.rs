@@ -144,8 +144,12 @@ fn verify(token: &str, v: &VerifiedBundle, cfg: &Config) -> Result<Identity, Ide
 /// token has expired. Only keys this server minted (`metadata.issued_by`) qualify, so
 /// the endpoint is no master-key delete oracle for other keys.
 fn revoke(key: &str, cfg: &Config) -> Result<(), (u16, String)> {
+    if !is_virtual_key(key) {
+        return Err((401, "not a virtual key".into()));
+    }
+    // Per call; the client's mint-path revoke timeout (warden-provider) covers both calls.
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(3))
         .build()
         .map_err(|e| (500, e.to_string()))?;
     let litellm = |path: &str| (cfg.litellm_url.join(path).expect("url"), &cfg.master_key);
@@ -155,13 +159,16 @@ fn revoke(key: &str, cfg: &Config) -> Result<(), (u16, String)> {
         .query(&[("key", key)])
         .bearer_auth(master.expose_secret())
         .send()
-        .map_err(|e| (502, format!("litellm: {e}")))?;
-    if !resp.status().is_success() {
+        .map_err(|e| (502, format!("litellm: {}", e.without_url())))?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Err((404, "unknown key".into()));
+    }
+    if !resp.status().is_success() {
+        return Err((502, format!("litellm /key/info returned {}", resp.status())));
     }
     let info: serde_json::Value = resp
         .json()
-        .map_err(|e| (502, format!("litellm body: {e}")))?;
+        .map_err(|e| (502, format!("litellm body: {}", e.without_url())))?;
     if info["info"]["metadata"]["issued_by"] != "warden" {
         return Err((403, "not a warden-issued key".into()));
     }
@@ -171,7 +178,7 @@ fn revoke(key: &str, cfg: &Config) -> Result<(), (u16, String)> {
         .bearer_auth(master.expose_secret())
         .json(&serde_json::json!({ "keys": [key] }))
         .send()
-        .map_err(|e| (502, format!("litellm: {e}")))?;
+        .map_err(|e| (502, format!("litellm: {}", e.without_url())))?;
     if !resp.status().is_success() {
         return Err((
             502,
@@ -180,6 +187,17 @@ fn revoke(key: &str, cfg: &Config) -> Result<(), (u16, String)> {
     }
     eprintln!("revoked a key for {}", info["info"]["user_id"]);
     Ok(())
+}
+
+/// LiteLLM virtual keys are `sk-` plus URL-safe base64. Refuses other bearers (e.g. the
+/// stored hashed token) before they reach LiteLLM.
+fn is_virtual_key(key: &str) -> bool {
+    key.strip_prefix("sk-").is_some_and(|rest| {
+        (8..=200).contains(&rest.len())
+            && rest
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    })
 }
 
 /// Policy is re-evaluated server side; the client's model list is only a filter.
@@ -254,7 +272,7 @@ fn mint(
         .bearer_auth(cfg.master_key.expose_secret())
         .json(&body)
         .send()
-        .map_err(|e| (502, format!("litellm: {e}")))?;
+        .map_err(|e| (502, format!("litellm: {}", e.without_url())))?;
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().unwrap_or_default();
@@ -268,7 +286,7 @@ fn mint(
     }
     let kr: KeyResponse = resp
         .json()
-        .map_err(|e| (502, format!("litellm body: {e}")))?;
+        .map_err(|e| (502, format!("litellm body: {}", e.without_url())))?;
     eprintln!(
         "minted key for {} harness={} models={} team={}",
         identity.subject,
@@ -277,4 +295,20 @@ fn mint(
         team.unwrap_or("-")
     );
     Ok(kr)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_virtual_key;
+
+    #[test]
+    fn virtual_key_shape() {
+        assert!(is_virtual_key("sk-abcDEF123_-xyz"));
+        assert!(!is_virtual_key("sk-short"));
+        assert!(!is_virtual_key(&format!("sk-{}", "a".repeat(201))));
+        assert!(!is_virtual_key("eyJhbGciOi.jwt.token"));
+        assert!(!is_virtual_key(&"a".repeat(64))); // hashed token
+        assert!(!is_virtual_key("sk-abc def123456"));
+        assert!(!is_virtual_key("sk-abc&key=other1"));
+    }
 }

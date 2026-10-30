@@ -171,6 +171,9 @@ audience, expiry checked against the IdP's JWKS), re-evaluates the signed bundle
 for that user, and never returns anything but a scoped virtual key. Run it on an
 internal network, behind TLS, with the master key injected from a secret store;
 its logs name the user, harness and models for every mint and never the key.
+`/v1/revoke` is authenticated by possession of the virtual key alone and only deletes
+keys with `metadata.issued_by = warden`; the server is otherwise reachable
+unauthenticated, so put it behind ingress (network policy or an authenticating proxy).
 Compromise of the host = compromise of the master key, exactly as for the proxy
 host itself.
 

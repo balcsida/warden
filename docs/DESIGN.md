@@ -157,7 +157,7 @@ Implementations:
   testing and small orgs.
 - `LiteLlmProvider` — offers `LiteLlm` first, then the formats the gateway exposes
   (`/anthropic` and `/v1` paths). `POST {litellm_url}/key/generate` with
-  `{"duration": "<ttl>", "models": [...], "max_budget": <from policy>, "user_id": <identity.subject>, "key_alias": "warden/<sub>/<harness>/<timestamp>", "metadata": {"harness": ..., "warden_version": ...}}`.
+  `{"duration": "<ttl>", "models": [...], "max_budget": <from policy>, "user_id": <identity.subject>, "key_alias": "warden/<sub>/<harness>/<timestamp>", "metadata": {"harness": ..., "issued_by": "warden"}}`.
   Authentication to the management API is the user's OIDC ID token (LiteLLM JWT
   auth, `general_settings.enable_jwt_auth`); warden never holds a LiteLLM master key.
   See open question Q3. `revoke` calls `/key/delete`, or mint-serve's `/v1/revoke` when
@@ -734,7 +734,8 @@ machine. Step 6 is the one network call and is bounded.
     `expires_at` and the harness is still running 5 min before it, print one line to
     stderr ("credential expires in 5 min; save your work"); re-issuing into a
     running process is not possible with env-var injection (see Q4).
-11. **Exit.** `Provider::revoke()` best-effort (2s timeout). Flush audit (bounded,
+11. **Exit.** `Provider::revoke()` best-effort (2s timeout; 8s through mint-serve, which makes two
+    LiteLLM calls of up to 3s each). Flush audit (bounded,
     3s; drop on timeout). Remove proxy socket/tempdir. Exit with the child's code, or
     `128 + signal`.
 
@@ -905,7 +906,8 @@ Deviations from the design above, all deliberate:
   `POST /v1/revoke` (bearer = the virtual key) deletes a key it minted: on OSS LiteLLM
   (verified v1.106.6) `/key/delete` with the virtual key itself is a 401, only the
   master key may delete. Holding the key proves ownership, and works after the ID
-  token has expired; keys without `metadata.issued_by = warden` are refused.
+  token has expired; keys without `metadata.issued_by = warden` are refused, as is any bearer that is not
+  shaped like a virtual key (`sk-…`).
   `tests/it_litellm.rs` runs the whole path against a real proxy (opt-in, `tests/it/litellm/`).
 - **Egress proxy, plain HTTP**: forwarded in origin-form with `Connection: close`
   (one request per proxied connection), the client's `Host` replaced by the target's

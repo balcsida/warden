@@ -253,8 +253,11 @@ impl Provider for LiteLlmProvider {
     }
 
     fn revoke(&self, cred: &Credential) -> Result<(), ProviderError> {
+        // mint-serve makes two LiteLLM calls of up to 3 s each; waiting for both keeps a
+        // late deletion from following a reported failure.
+        let timeout = Duration::from_secs(if self.mint_url.is_some() { 8 } else { 2 });
         let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(2))
+            .timeout(timeout)
             .build()
             .map_err(|e| ProviderError::Other(e.to_string()))?;
         // OSS LiteLLM (v1.106.6) answers 401 when a virtual key deletes itself: only the
