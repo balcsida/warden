@@ -287,3 +287,36 @@ fn unsigned_bundle_refused() {
         .unwrap();
     assert_eq!(out.status.code(), Some(78));
 }
+
+#[test]
+fn workspace_containing_warden_dirs_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let (config, data) = fixture(root.path(), 1);
+    // (cwd, data dir): the parent of the config dir; the data dir itself
+    for (cwd, data_dir) in [
+        (root.path().to_path_buf(), elsewhere.path().to_path_buf()),
+        (data.clone(), data.clone()),
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_warden"))
+            .current_dir(&cwd)
+            .env("WARDEN_CONFIG", &config)
+            .env("WARDEN_TRUSTED_KEYS", config.join("trusted-keys"))
+            .env("WARDEN_DATA", &data_dir)
+            .env("WARDEN_AUDIT", "none")
+            .env("WARDEN_STATIC_KEY_GW", "sk-test")
+            .env(
+                "WARDEN_DEV_IDENTITY",
+                r#"{"subject":"tester","groups":["engineering"]}"#,
+            )
+            .args(["run", "probe", "--dry-run", "--", "a", "b", "c"])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(77), "{}: {stderr}", cwd.display());
+        assert!(
+            stderr.contains("run warden from a project directory"),
+            "{stderr}"
+        );
+    }
+}

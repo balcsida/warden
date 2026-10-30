@@ -21,6 +21,36 @@ use crate::{Cli, Cmd, EX_CONFIG, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE, Fail, dirs
 
 const BRIDGE_PORT: u16 = 3128;
 
+/// A writable root that contains warden's config or data dir would let the harness
+/// rewrite adapters and the policy bundle for later launches. The reverse (the data
+/// dir containing a root, e.g. the harness homes) is fine.
+fn refuse_roots_containing_warden_dirs(read_write: &[PathBuf]) -> Result<(), Fail> {
+    let norm = |p: PathBuf| {
+        let p = std::fs::canonicalize(&p).unwrap_or(p);
+        if cfg!(windows) {
+            PathBuf::from(p.to_string_lossy().to_lowercase())
+        } else {
+            p
+        }
+    };
+    for dir in [dirs::config_dir(), dirs::data_dir()] {
+        let shown = dir.display().to_string();
+        let dir = norm(dir);
+        for root in read_write {
+            if dir.starts_with(norm(root.clone())) {
+                return Err(Fail::new(
+                    EX_NOPERM,
+                    format!(
+                        "writable root {} contains warden's own directory {shown}; run warden from a project directory",
+                        root.display()
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn dispatch(cli: &Cli) -> Result<ExitCode, Fail> {
     match &cli.cmd {
         Cmd::Login => {
@@ -561,6 +591,7 @@ fn launch(
     }
     read_write.sort();
     read_write.dedup();
+    refuse_roots_containing_warden_dirs(&read_write)?;
     let spec = SandboxSpec {
         workspace: workspace.clone(),
         read_only: plan.fs_ro.clone(),
