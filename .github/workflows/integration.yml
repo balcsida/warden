@@ -49,3 +49,35 @@ jobs:
       - name: Collector logs
         if: failure()
         run: docker logs wit-otlp-collector
+
+  # Real OSS LiteLLM (mock_response models, no upstream keys) behind `warden mint-serve`.
+  litellm:
+    runs-on: ubuntu-24.04
+    env:
+      WARDEN_IT_LITELLM_URL: http://127.0.0.1:14000
+      WARDEN_IT_LITELLM_MASTER_KEY: sk-it-master-0000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor; the
+          # sandbox needs them. This mirrors what a managed fleet would configure.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: Start Postgres and LiteLLM
+        run: docker compose -f crates/warden-cli/tests/it/litellm/compose.yaml up -d --wait
+      - name: Wait for LiteLLM
+        run: |
+          for _ in $(seq 60); do
+            curl -sf "$WARDEN_IT_LITELLM_URL/health/liveliness" && exit 0
+            sleep 2
+          done
+          docker logs wit-litellm-proxy
+          exit 1
+      - run: cargo test -p warden-cli --test it_litellm -- --nocapture
+      - name: LiteLLM logs
+        if: failure()
+        run: docker logs wit-litellm-proxy

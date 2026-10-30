@@ -901,6 +901,13 @@ Deviations from the design above, all deliberate:
   and returns LiteLLM's `/key/generate` response. Stateless; run it anywhere that
   can reach the proxy and the IdP. This is the first control-plane piece and is
   deliberately a subcommand of the same binary.
+  `POST /v1/revoke` (bearer = the virtual key) deletes a key it minted: on OSS LiteLLM
+  (verified v1.106.6) `/key/delete` with the virtual key itself is a 401, only the
+  master key may delete. Holding the key proves ownership, and works after the ID
+  token has expired; keys without `metadata.issued_by = warden` are refused.
+  `tests/it_litellm.rs` runs the whole path against a real proxy (opt-in, `tests/it/litellm/`).
+  Known gap: the sandbox proxy forwards plain-HTTP requests in absolute form, which
+  uvicorn (LiteLLM) 404s; https gateways (CONNECT) are unaffected.
 
 - **Q10 Name.** `warden` is taken on crates.io by an unrelated crate. Binary name can
   stay `warden`; the crate names can be `warden-*` only if those are free (they
