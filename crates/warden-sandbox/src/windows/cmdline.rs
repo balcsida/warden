@@ -38,16 +38,33 @@ fn quote_arg(arg: &[u16], out: &mut Vec<u16>) {
     out.push(b'"' as u16);
 }
 
-/// NUL-terminated command line for `argv`.
+fn invalid(msg: String) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, msg)
+}
+
+/// NUL-terminated command line for `argv`. Windows runs `.cmd`/`.bat` targets
+/// through cmd.exe, whose quoting differs from the MSVCRT rules above, so (like
+/// Rust's std) arguments that cannot be passed safely to them are refused.
 pub fn command_line(argv: &[OsString]) -> io::Result<Vec<u16>> {
+    let is_batch = argv.first().is_some_and(|a| {
+        let a = a.to_string_lossy().to_lowercase();
+        a.ends_with(".cmd") || a.ends_with(".bat")
+    });
+    if is_batch
+        && let Some(a) = argv[1..]
+            .iter()
+            .find(|a| a.to_string_lossy().contains(['"', '%', '\r', '\n']))
+    {
+        return Err(invalid(format!(
+            "argument {a:?} contains a quote, percent sign or line break, which cmd.exe would misread when running {:?}",
+            argv[0]
+        )));
+    }
     let mut line = Vec::new();
     for (i, a) in argv.iter().enumerate() {
         let wide: Vec<u16> = a.encode_wide().collect();
         if wide.contains(&0) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "argument contains a NUL",
-            ));
+            return Err(invalid("argument contains a NUL".into()));
         }
         if i > 0 {
             line.push(b' ' as u16);
@@ -60,7 +77,15 @@ pub fn command_line(argv: &[OsString]) -> io::Result<Vec<u16>> {
 
 /// Unicode environment block: `KEY=value\0…\0\0`, sorted case-insensitively
 /// with duplicate spellings of a name dropped (Windows names are case-insensitive).
-pub fn env_block(env: &BTreeMap<String, String>) -> Vec<u16> {
+pub fn env_block(env: &BTreeMap<String, String>) -> io::Result<Vec<u16>> {
+    if let Some((k, _)) = env
+        .iter()
+        .find(|(k, v)| k.contains('\0') || v.contains('\0'))
+    {
+        return Err(invalid(format!(
+            "environment variable {k:?} contains a NUL"
+        )));
+    }
     let mut entries: Vec<(&String, &String)> = env.iter().collect();
     entries.sort_by_key(|(k, _)| k.to_uppercase());
     entries.dedup_by(|a, b| a.0.eq_ignore_ascii_case(b.0));
@@ -73,7 +98,7 @@ pub fn env_block(env: &BTreeMap<String, String>) -> Vec<u16> {
     if env.is_empty() {
         block.push(0);
     }
-    block
+    Ok(block)
 }
 
 #[cfg(test)]
@@ -107,15 +132,37 @@ mod tests {
     }
 
     #[test]
+    fn batch_targets_refuse_arguments_cmd_would_misread() {
+        let argv = |a: &[&str]| a.iter().map(OsString::from).collect::<Vec<_>>();
+        assert_eq!(
+            line(&["C:\\npm\\claude.CMD", "-p", "fix the bug"]),
+            r#"C:\npm\claude.CMD -p "fix the bug""#
+        );
+        for bad in ["say \"hi\"", "100%", "a\nb", "a\rb"] {
+            for exe in ["x.cmd", "X.BAT"] {
+                assert!(command_line(&argv(&[exe, bad])).is_err(), "{exe} {bad:?}");
+            }
+            // other targets keep the MSVCRT quoting
+            assert!(command_line(&argv(&["x.exe", bad])).is_ok(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn env_values_with_nul_are_rejected() {
+        let env = BTreeMap::from([("A".to_string(), "1\02".to_string())]);
+        assert!(env_block(&env).is_err());
+    }
+
+    #[test]
     fn env_block_is_sorted_deduped_and_double_nul_terminated() {
         let env = BTreeMap::from([
             ("b".to_string(), "2".to_string()),
             ("A".to_string(), "1".to_string()),
             ("B".to_string(), "3".to_string()),
         ]);
-        let block = env_block(&env);
+        let block = env_block(&env).unwrap();
         let text = String::from_utf16(&block).unwrap();
         assert_eq!(text, "A=1\0B=3\0\0");
-        assert_eq!(env_block(&BTreeMap::new()), [0, 0]);
+        assert_eq!(env_block(&BTreeMap::new()).unwrap(), [0, 0]);
     }
 }
